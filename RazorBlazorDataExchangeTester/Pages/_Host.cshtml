@@ -1,0 +1,36 @@
+﻿@* 
+    La pagina _Host.cshtml è fondamentale per attivare Blazor, senza Blazor non funziona.
+In questo file è possibile includere i file CSS e JavaScript necessari per il funzionamento di Blazor.
+Inoltre, è possibile includere il tag <app> che rappresenta il componente principale dell'applicazione Blazor.
+*@
+@page "/blazorApp" 
+@addTagHelper *, Microsoft.AspNetCore.Web.TagHelpers   
+
+@{
+    Layout = "_Layout";
+}
+
+<!DOCTYPE html>
+<html>
+    
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAzorBlazorDataExchange</title>
+    <base href="/" />
+    @* <link href="css/bootstrap.min.css" rel="stylesheet" /> *@
+    @* <link href="css/site.css" rel="stylesheet" /> *@
+    @*<link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet" /> *@
+    @*<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet"> *@
+    @* <link rel="stylesheet" href="_content/Radzen.Blazor/css/material-base.css">  *@
+
+   
+</head>
+<body>
+    <app>
+        <component type="typeof(RazorBlazorDataExchangeTester.Pages.App)" render-mode="Server" />
+    </app>
+
+    
+</body>
+</html>

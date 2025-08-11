@@ -1,0 +1,89 @@
+﻿@page
+
+
+@* Il taghelper può essere dichiarato nella pagina Razor o in maniera globale in _ViewImports.cshtml *@
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers  
+@using Microsoft.Extensions.DependencyInjection
+@using System.ComponentModel
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Web
+
+
+@inject RazorBlazorDataExchange DataExchange
+@inject IJSRuntime JS
+
+@model IndexModel
+@{
+    ViewData["Title"] = "Home page";
+}
+
+<div class="text-center">
+    <form id="antiForgeryForm">
+        @Html.AntiForgeryToken()
+    </form>
+
+    <div class="text-center">
+        <h1 class="display-4">Welcome to Razor <-> Blazor Interop Demo</-></h1>
+        <p>DataExchange Service Instance HashCode in Razor Page: @DataExchange.GetHashCode()</p>
+        <p>DataExchange SessionId: @Model.SessionId</p>
+        
+        <div class="counter-container mb-4">
+            <!-- Aggiungi questo elemento nascosto alla pagina -->
+            <input type="hidden" id="counter-signal" value="@Model.XCounter" />
+            <p>Counter value in Razor: <span id="counter-value">@Model.XCounter</span></p>
+            <button id="increment-btn" class="btn btn-success" onclick="incrementCounter()">Increase from Razor</button>
+            
+        </div>
+
+        <component type="typeof(BlazorComponents.CounterComponent )"
+                   render-mode="Server"
+                   param-RazorBlazorDataExchangeSessionId=@(Model.SessionId)
+                   param-ComponentId=@("CounterComponent1")
+                   param-initialCount=@(5)
+                   param-buttonText=@("Increase from Blazor Component inside Razor Page")
+                   param-counterText=@("Current value in Blazor Component:")
+                   param-XCounter=@Model.XCounter
+                   param-JsMessageHandler=@("handleBlazorEvent") /> 
+
+       
+        @* <component type="typeof(RazorBlazorDataExchangeTester.TestComponentX)" render-mode="Server" /> *@
+
+        
+    </div>
+
+
+
+
+
+
+
+</div>
+
+@section Scripts {
+    <script>
+        function handleBlazorEvent(message, value) {
+            console.log(message);
+            document.getElementById('counter-value').innerText = value;
+        }
+
+       
+
+        // Funzioni per gestire il contatore in tempo reale
+        function incrementCounter() {
+            fetch('/Index?handler=IncrementCounter', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'RequestVerificationToken': document.querySelector('input[name="__RequestVerificationToken"]').value
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('counter-value').innerText = data.value;
+            });
+        }
+
+
+    </script>
+}

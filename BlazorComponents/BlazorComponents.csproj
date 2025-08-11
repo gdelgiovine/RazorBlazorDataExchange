@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<AddRazorSupportForMvc>true</AddRazorSupportForMvc>
+		<!-- Disabilita la generazione automatica di StaticWebAssets -->
+		<StaticWebAssetBasePath>_content/BlazorComponents</StaticWebAssetBasePath>
+		<!-- Impedisce la generazione di errori per file mancanti -->
+		<ErrorOnMissingStaticWebAsset>false</ErrorOnMissingStaticWebAsset>
+	</PropertyGroup>
+	<!-- Esclude specificamente il file exampleJsInterop.js -->
+	<ItemGroup>
+		<Content Remove="wwwroot\**\exampleJsInterop.js" />
+		<None Remove="wwwroot\**\exampleJsInterop.js" />
+		<StaticWebAsset Remove="wwwroot\**\exampleJsInterop.js" />
+	</ItemGroup>
+	<ItemGroup>
+		<Content Remove="BlazorComponents.razor" />
+	</ItemGroup>
+
+	<!-- Crea una directory wwwroot vuota se non esiste -->
+	<ItemGroup>
+		<Folder Include="wwwroot\" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<SupportedPlatform Include="browser" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="8.0.16" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\RazorBlazorDataExchange\RazorBlazorDataExchange.csproj" />
+	</ItemGroup>
+
+</Project>

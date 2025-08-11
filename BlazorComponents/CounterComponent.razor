@@ -1,0 +1,120 @@
+﻿@using System.ComponentModel
+@using Microsoft.AspNetCore.Http
+@* @using Microsoft.AspNetCore.Components.Forms *@
+@using Microsoft.JSInterop;
+@* @inject IHttpContextAccessor HttpContextAccessor *@
+@* @using Radzen.Blazor *@
+@inject RazorBlazorDataExchange DataExchange 
+@* @inject RazorBlazorDataExchangeProvider Provider *@
+@inject IJSRuntime JS
+<p>DataExchange Service Instance HashCode in Blazor Component: @DataExchange.GetHashCode()</p>
+<p>DataExchange SessionId in Blazor Component: @RazorBlazorDataExchangeSessionId</p>
+<p>DataExchange Blazor Component ComponentId: @ComponentId</p>
+<p>@counterText @XCounter</p>
+@* <RadzenButton Text="@buttonText" Click="IncrementCount" /> *@
+<button class="btn btn-primary" onclick="@IncrementCount">@buttonText</button>
+
+
+@namespace BlazorComponents
+@code {
+
+
+    [Parameter ]
+    public string RazorBlazorDataExchangeSessionId { get; set; } = "GLOBAL";
+    [Parameter]
+    public string ComponentId { get; set; }
+    [Parameter]
+    public int initialCount { get; set; } = 0;
+    [Parameter]
+    public int XCounter { get; set; } = 0;
+    [Parameter]
+    public string buttonText { get; set; } = "Click me"; 
+    [Parameter]
+    public string counterText { get; set; } = "Current count:";
+
+    [Parameter]
+    public string JsMessageHandler { get; set; } = "handleBlazorEvent";
+
+
+    private string Setter = nameof(BlazorComponents.CounterComponent); 
+    private int currentCount = 0;
+
+    public async Task  IncrementCount()
+    {
+
+        currentCount++;
+        XCounter = currentCount;
+        // Esistono due possibili canali di notifica per il cambio di stato
+
+
+        // Notifica tramite evento OnDataChanged  
+        // Questo tipo di notifica usa INotifyPropertyChanged   
+        // deve essere quindi definito un evento OnDataChanged nel CS che istanzia DataExchange
+        // Funziona sia per le pagine Razor che per i componenti Blazor
+        DataExchange.NotifyDataChange(RazorBlazorDataExchangeSessionId, "XCounter", currentCount, this.Setter );
+
+        // Notifica tramite JSInterop   
+        // Questo tipo di notifica usa JSInterop e quindi un metodo JS esistente nella pagina Razor 
+        // che ospita il componente Blazor
+        // Funziona solo verso le pagine Razor     
+        string message = $"Il contatore è stato incrementato a {currentCount}";
+        string value = System.Text.Json.JsonSerializer.Serialize(XCounter );
+        await InvokeRazorPageJS(JsMessageHandler, "", value);
+    }
+
+
+   
+
+    protected override void OnInitialized()
+    {
+      
+        //sottoscrizione dell'evento per essere avvisato di cambiamenti di stato
+        //avvenuti dentro la pagina Razor che ospita il componente Blazor   
+        if (this.ComponentId == null)
+            this.ComponentId = Guid.NewGuid().ToString();
+
+        DataExchange.DataChangeWithActor += OnDataChanged;
+    }
+
+    private void OnDataChanged(object sender, DataChangeWithActorEventArgs e)
+    {
+        //Controllo per evitare di gestire l'evento se la sessione è diversa
+        // if (!DataExchange.SameSession (e.SessionId, this.RazorBlazorDataExchangeSessionId))
+        //     return;
+        // //Controllo per evitare di gestire l'evento se il setter è lo stesso contesto
+        // if (DataExchange.SameSetter(e.Setter, this.Setter))
+        //     return;
+        // if (e.IsProcessingNotification)
+        //     return;
+
+        if (!DataExchange.ShouldProcessEvent(this.RazorBlazorDataExchangeSessionId, this.Setter, e))
+            return;
+
+        // verifico cosa è stato cambiato
+        // e mette a disposizione le seguenti proprietà 
+        // e.PropertyName
+        // e.Value
+        // e.Setter
+        // e.Getter 
+        // e.Type
+
+        if (e.PropertyName == "XCounter")
+        {
+            XCounter = (int)e.Value; 
+            currentCount = XCounter;
+            InvokeAsync(StateHasChanged);
+            
+        }
+    }
+
+    private async Task InvokeRazorPageJS(string ScriptName, string message, string value)
+    {
+        
+        await JS.InvokeVoidAsync(ScriptName,message,value);
+    }
+
+    public void Dispose()
+    {
+        DataExchange.DataChangeWithActor -= OnDataChanged;
+    }
+}

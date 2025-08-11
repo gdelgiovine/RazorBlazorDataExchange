@@ -1,0 +1,26 @@
+﻿@* 
+    Il componente App.Razor è fondamentale perchè contiene il Router che permette 
+di navigare tra le pagine dell'applicazione Blazor.
+ *@
+@using Microsoft.AspNetCore.Components.Routing
+
+@* @inject DialogService DialogService *@
+@* @inject NavigationManager NavigationManager *@
+@* @inject Radzen.ThemeService ThemeService  *@
+@* @inject Radzen.QueryStringThemeService QueryStringThemeService *@
+
+@* <script src="_content/Radzen.Blazor/Radzen.Blazor.js?v=@(typeof(Radzen.Colors).Assembly.GetName().Version)"> </script> *@
+@* <script src="_content/Radzen.Blazor/Radzen.Blazor.js"></script>  *@
+@* <RadzenTheme Theme="material" @rendermode="InteractiveServer" /> *@
+@* <RadzenTheme Theme="material3" @rendermode="InteractiveServer" /> *@
+@* <RadzenDialog /> *@
+
+<Router AppAssembly="typeof(Program ).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData"/>
+    </Found>
+    <NotFound>
+        <h1>Page not found</h1>
+        <p>Sorry, but there's nothing here!</p>
+    </NotFound>
+</Router>
