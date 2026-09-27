@@ -118,8 +118,9 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
         => TryGet<T>(sessionId, propertyName, out var value) ? value : default;
 
     /// <summary>
-    /// Publishes a typed value and synchronously dispatches matching subscriptions.
-    /// Use PublishAsync from asynchronous request/component code.
+    /// Publishes a typed value. Synchronous handlers are executed inline. If a subscriber
+    /// performs asynchronous work, that work is observed without blocking the publishing thread.
+    /// Use PublishAsync when the caller must await completion of every asynchronous subscriber.
     /// </summary>
     public ExchangeMessage<T>? Publish<T>(
         string sessionId,
@@ -177,7 +178,9 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Atomically performs read-modify-write on one property and synchronously publishes the result.
+    /// Atomically performs read-modify-write on one property and publishes the result.
+    /// Synchronous handlers run inline; incomplete asynchronous handlers continue without
+    /// blocking the publishing thread. Use UpdateAsync to await every asynchronous subscriber.
     /// </summary>
     public ExchangeMessage<T>? Update<T>(
         string sessionId,
@@ -306,7 +309,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             throw new ArgumentOutOfRangeException(nameof(timeout));
 
         var now = DateTimeOffset.UtcNow;
-        var candidates = new List<string>();
+        var candidates = new List<(string SessionId, ExchangeSessionState State)>();
 
         foreach (var pair in _sessions)
         {
@@ -316,17 +319,26 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
                 var removable = includeSessionsWithActiveSubscriptions || pair.Value.Subscriptions.Count == 0;
 
                 if (inactive && removable)
-                    candidates.Add(pair.Key);
+                    candidates.Add((pair.Key, pair.Value));
             }
         }
 
         var removed = 0;
-        foreach (var sessionId in candidates)
+        foreach (var candidate in candidates)
         {
-            if (_sessions.TryRemove(sessionId, out _))
+            lock (candidate.State.SyncRoot)
             {
-                removed++;
-                Interlocked.Increment(ref _removedSessions);
+                var inactive = now - candidate.State.LastAccess > timeout;
+                var removable = includeSessionsWithActiveSubscriptions || candidate.State.Subscriptions.Count == 0;
+                if (!inactive || !removable)
+                    continue;
+
+                var collection = (ICollection<KeyValuePair<string, ExchangeSessionState>>)_sessions;
+                if (collection.Remove(new KeyValuePair<string, ExchangeSessionState>(candidate.SessionId, candidate.State)))
+                {
+                    removed++;
+                    Interlocked.Increment(ref _removedSessions);
+                }
             }
         }
 
@@ -588,7 +600,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
         return new PreparedPublication(
             message,
             subscriptions,
-            legacyGetters ?? new List<string>(),
+            legacyGetters?.ToList() ?? new List<string>(),
             legacyIsProcessing);
     }
 
@@ -645,22 +657,37 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
 
             try
             {
-                subscription.InvokeAsync(prepared.Message, CancellationToken.None)
-                    .AsTask()
-                    .GetAwaiter()
-                    .GetResult();
-                Interlocked.Increment(ref _deliveredMessages);
+                var pending = subscription.InvokeAsync(prepared.Message, CancellationToken.None);
+                if (pending.IsCompletedSuccessfully)
+                {
+                    pending.GetAwaiter().GetResult();
+                    Interlocked.Increment(ref _deliveredMessages);
+                }
+                else
+                {
+                    _ = CompleteDeferredDispatchAsync(pending, subscription, prepared.Message);
+                }
             }
             catch (Exception ex)
             {
-                Interlocked.Increment(ref _deliveryFailures);
-                _logger.LogError(
-                    ex,
-                    "Exchange subscriber failed. Session={SessionId}, Property={PropertyName}, SubscriberActor={ActorId}",
-                    prepared.Message.SessionId,
-                    prepared.Message.PropertyName,
-                    subscription.ActorId);
+                RecordDeliveryFailure(ex, subscription, prepared.Message);
             }
+        }
+    }
+
+    private async Task CompleteDeferredDispatchAsync(
+        ValueTask pending,
+        IExchangeSubscriptionEntry subscription,
+        ExchangeMessage message)
+    {
+        try
+        {
+            await pending.ConfigureAwait(false);
+            Interlocked.Increment(ref _deliveredMessages);
+        }
+        catch (Exception ex)
+        {
+            RecordDeliveryFailure(ex, subscription, message);
         }
     }
 
@@ -689,14 +716,22 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            Interlocked.Increment(ref _deliveryFailures);
-            _logger.LogError(
-                ex,
-                "Exchange subscriber failed. Session={SessionId}, Property={PropertyName}, SubscriberActor={ActorId}",
-                message.SessionId,
-                message.PropertyName,
-                subscription.ActorId);
+            RecordDeliveryFailure(ex, subscription, message);
         }
+    }
+
+    private void RecordDeliveryFailure(
+        Exception exception,
+        IExchangeSubscriptionEntry subscription,
+        ExchangeMessage message)
+    {
+        Interlocked.Increment(ref _deliveryFailures);
+        _logger.LogError(
+            exception,
+            "Exchange subscriber failed. Session={SessionId}, Property={PropertyName}, SubscriberActor={ActorId}",
+            message.SessionId,
+            message.PropertyName,
+            subscription.ActorId);
     }
 
     private void RaiseLegacySingle(PreparedPublication prepared)
@@ -811,6 +846,18 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             state.CorrelationGuards.Remove(key);
 
         state.LastCorrelationPrune = now;
+    }
+
+    private static bool CanDeliverTo<T>(ExchangeMessage message)
+    {
+        var targetType = typeof(T);
+
+        if (message.Value is not null)
+            return targetType.IsAssignableFrom(message.Value.GetType());
+
+        // For null payloads there is no runtime value type to inspect. The envelope keeps
+        // the declared publication type specifically so typed routing remains correct.
+        return targetType.IsAssignableFrom(message.ValueType);
     }
 
     private static ExchangeMessage<T> ToTypedMessage<T>(ExchangeMessage message)
@@ -932,10 +979,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             if (string.Equals(ActorId, message.ActorId, StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            if (message.Value is null)
-                return !typeof(T).IsValueType || Nullable.GetUnderlyingType(typeof(T)) is not null;
-
-            return typeof(T).IsAssignableFrom(message.Value.GetType());
+            return CanDeliverTo<T>(message);
         }
 
         public ValueTask InvokeAsync(ExchangeMessage message, CancellationToken cancellationToken)
