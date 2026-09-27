@@ -9,7 +9,9 @@ internal static class Program
         await TestOrderedSameRouteCompletion();
         await TestIndependentPropertyLanes();
         await TestSessionWideOrdering();
+        await TestSessionScopeCoordinatesPropertyReaders();
         await TestReentrantSameRoutePublication();
+        await TestCrossPropertyReentrantRequiresSessionScope();
         await TestOrderedAtomicUpdates();
         await TestTransportBroadcastAndFailureIsolation();
         TestTransportSerializationRoundTrip();
@@ -57,6 +59,8 @@ internal static class Program
         Assert(observed.SequenceEqual(new[] { 1, 2 }),
             $"Ordered route completion was not preserved. Observed: {string.Join(",", observed)}");
         Assert(ordered.GetMetrics().ActiveLanes == 0, "Ordered lane was not retired after completion.");
+        Assert(ordered.GetMetrics().ActiveSessionCoordinators == 0,
+            "Session ordering coordinator was not retired after completion.");
 
         Console.WriteLine("PASS ordered same-route completion");
     }
@@ -129,13 +133,82 @@ internal static class Program
 
         await Task.Delay(50);
         Assert(!p2Entered.Task.IsCompleted,
-            "Session ordering allowed a second property to enter before the current session lane completed.");
+            "Session ordering allowed a second session-scoped property to enter before the writer completed.");
 
         releaseP1.TrySetResult();
         await p2Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await Task.WhenAll(task1, task2);
 
         Console.WriteLine("PASS session-wide ordering");
+    }
+
+    private static async Task TestSessionScopeCoordinatesPropertyReaders()
+    {
+        const string sessionId = "mixed-scope-session";
+        var broker = new RazorBlazorDataExchange();
+        var ordered = new RazorBlazorOrderedDataExchange(broker);
+
+        // Existing property reader must finish before a session writer can enter.
+        var readerEntered = NewSignal();
+        var releaseReader = NewSignal();
+        var writerEntered = NewSignal();
+
+        using var readerSubscription = broker.Subscribe<int>(sessionId, "ReaderProperty", "ReaderObserver", async (_, token) =>
+        {
+            readerEntered.TrySetResult();
+            await releaseReader.Task.WaitAsync(token);
+        });
+        using var writerSubscription = broker.Subscribe<int>(sessionId, "WriterProperty", "WriterObserver", _ => writerEntered.TrySetResult());
+
+        var readerTask = ordered.PublishAsync(sessionId, "ReaderProperty", 1, "ReaderPublisher").AsTask();
+        await readerEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var writerTask = ordered.PublishAsync(
+            sessionId,
+            "WriterProperty",
+            2,
+            "WriterPublisher",
+            orderingScope: RazorBlazorExchangeOrderingScope.Session).AsTask();
+
+        await Task.Delay(50);
+        Assert(!writerEntered.Task.IsCompleted,
+            "Session writer entered while a property reader was still active.");
+
+        releaseReader.TrySetResult();
+        await writerEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.WhenAll(readerTask, writerTask);
+
+        // While a session writer is active, a new property reader must wait.
+        var writer2Entered = NewSignal();
+        var releaseWriter2 = NewSignal();
+        var reader2Entered = NewSignal();
+
+        using var writer2Subscription = broker.Subscribe<int>(sessionId, "Writer2", "Writer2Observer", async (_, token) =>
+        {
+            writer2Entered.TrySetResult();
+            await releaseWriter2.Task.WaitAsync(token);
+        });
+        using var reader2Subscription = broker.Subscribe<int>(sessionId, "Reader2", "Reader2Observer", _ => reader2Entered.TrySetResult());
+
+        var writer2Task = ordered.PublishAsync(
+            sessionId,
+            "Writer2",
+            3,
+            "Writer2Publisher",
+            orderingScope: RazorBlazorExchangeOrderingScope.Session).AsTask();
+
+        await writer2Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var reader2Task = ordered.PublishAsync(sessionId, "Reader2", 4, "Reader2Publisher").AsTask();
+        await Task.Delay(50);
+        Assert(!reader2Entered.Task.IsCompleted,
+            "Property reader entered while a session writer was still active.");
+
+        releaseWriter2.TrySetResult();
+        await reader2Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.WhenAll(writer2Task, reader2Task);
+
+        Console.WriteLine("PASS session writer/property reader coordination");
     }
 
     private static async Task TestReentrantSameRoutePublication()
@@ -173,6 +246,45 @@ internal static class Program
         Assert(ordered.GetMetrics().ReentrantBypasses >= 1, "Reentrant ordered path was not detected.");
 
         Console.WriteLine("PASS reentrant same-route publication");
+    }
+
+    private static async Task TestCrossPropertyReentrantRequiresSessionScope()
+    {
+        const string sessionId = "cross-property-reentrant";
+        var broker = new RazorBlazorDataExchange();
+        var ordered = new RazorBlazorOrderedDataExchange(broker);
+        var rejected = false;
+
+        using var subscription = broker.Subscribe<int>(
+            sessionId,
+            "P1",
+            "NestedCrossPropertyPublisher",
+            async (message, token) =>
+            {
+                try
+                {
+                    await ordered.PublishAsync(
+                        sessionId,
+                        "P2",
+                        message.Value + 1,
+                        "NestedCrossPropertyPublisher",
+                        message.CorrelationId,
+                        cancellationToken: token);
+                }
+                catch (InvalidOperationException)
+                {
+                    rejected = true;
+                }
+            });
+
+        await ordered.PublishAsync(sessionId, "P1", 1, "OuterPublisher")
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert(rejected,
+            "Cross-property reentrant property ordering was not rejected; this could permit lock-order deadlocks.");
+
+        Console.WriteLine("PASS cross-property reentrant safety");
     }
 
     private static async Task TestOrderedAtomicUpdates()
