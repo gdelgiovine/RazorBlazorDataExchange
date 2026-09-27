@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-
 internal static class Program
 {
     private static async Task Main()
@@ -8,6 +6,7 @@ internal static class Program
 
         await TestSessionIsolation();
         await TestTypedRoutingAndActorFiltering();
+        await TestBidirectionalRazorBlazorFanOut();
         await TestAtomicConcurrency();
         await TestCorrelationLoopSuppression();
         await TestSubscriberFailureIsolation();
@@ -53,6 +52,78 @@ internal static class Program
         Assert(actorBCalls == 1, "Matching peer subscription did not receive exactly one notification.");
 
         Console.WriteLine("PASS typed routing and actor filtering");
+    }
+
+    private static async Task TestBidirectionalRazorBlazorFanOut()
+    {
+        const string sessionId = "bidirectional-session";
+        const string counterProperty = "Counter";
+
+        var broker = new RazorBlazorDataExchange();
+        var blazorComponent1Calls = 0;
+        var blazorComponent2Calls = 0;
+        var otherSessionCalls = 0;
+        var razorObservedBlazorMessages = 0;
+        var razorObservedStatusProperty = false;
+
+        using var blazor1 = broker.Subscribe<int>(
+            sessionId,
+            counterProperty,
+            "Blazor:Counter:1",
+            _ => Interlocked.Increment(ref blazorComponent1Calls));
+
+        using var blazor2 = broker.Subscribe<int>(
+            sessionId,
+            counterProperty,
+            "Blazor:Counter:2",
+            _ => Interlocked.Increment(ref blazorComponent2Calls));
+
+        using var isolatedOtherSession = broker.Subscribe<int>(
+            "other-session",
+            counterProperty,
+            "Blazor:OtherSession",
+            _ => Interlocked.Increment(ref otherSessionCalls));
+
+        // A Razor/MVC coordinator can observe the whole session, not only one property.
+        using var razorCoordinator = broker.SubscribeSession(
+            sessionId,
+            "Razor:PageCoordinator",
+            message =>
+            {
+                if (message.ActorId.StartsWith("Blazor:", StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref razorObservedBlazorMessages);
+                    if (message.PropertyName == "Status")
+                        razorObservedStatusProperty = true;
+                }
+            });
+
+        // Razor -> every interested Blazor component in the same session.
+        await broker.PublishAsync(sessionId, counterProperty, 5, "Razor:/Index");
+
+        Assert(blazorComponent1Calls == 1, "Razor -> Blazor component 1 was not delivered.");
+        Assert(blazorComponent2Calls == 1, "Razor -> Blazor component 2 was not delivered.");
+        Assert(otherSessionCalls == 0, "Razor publication crossed the session boundary.");
+
+        // Blazor -> Razor and peer Blazor component. The publishing Blazor actor does not
+        // receive a self-echo, but every other interested actor in the session does.
+        await broker.PublishAsync(sessionId, counterProperty, 6, "Blazor:Counter:1");
+
+        Assert(blazorComponent1Calls == 1, "Blazor publisher received an unwanted self-echo.");
+        Assert(blazorComponent2Calls == 2, "Blazor -> peer Blazor fan-out was not delivered.");
+        Assert(razorObservedBlazorMessages == 1, "Blazor -> Razor session subscriber was not delivered.");
+        Assert(broker.Get<int>(sessionId, counterProperty) == 6,
+            "Blazor publication was not persisted for the next Razor/MVC request.");
+
+        // Session-wide Razor subscription must not be constrained to the Counter property.
+        await broker.PublishAsync(sessionId, "Status", "ready", "Blazor:Status:1");
+
+        Assert(razorObservedBlazorMessages == 2,
+            "Razor session-wide subscriber did not receive a second Blazor property.");
+        Assert(razorObservedStatusProperty,
+            "Session-wide routing incorrectly restricted Blazor -> Razor communication by property.");
+
+        Console.WriteLine("PASS Razor <-> Blazor bidirectional fan-out");
     }
 
     private static async Task TestAtomicConcurrency()
