@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RazorBlazorDataExchangeTest
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RazorBlazorDataExchange.StressTests", "RazorBlazorDataExchange.StressTests\RazorBlazorDataExchange.StressTests.csproj", "{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RazorBlazorDataExchange.E2ETests", "RazorBlazorDataExchange.E2ETests\RazorBlazorDataExchange.E2ETests.csproj", "{A86CE2ED-A67A-4D36-AB11-041522CFDF33}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -39,6 +41,10 @@ Global
 		{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A86CE2ED-A67A-4D36-AB11-041522CFDF33}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A86CE2ED-A67A-4D36-AB11-041522CFDF33}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A86CE2ED-A67A-4D36-AB11-041522CFDF33}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A86CE2ED-A67A-4D36-AB11-041522CFDF33}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
