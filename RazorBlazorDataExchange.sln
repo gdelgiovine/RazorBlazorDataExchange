@@ -1,4 +1,4 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.14.36109.1
@@ -10,6 +10,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EFHelper", "EFHelper\EFHelper.csproj", "{2026941B-87D2-4EE9-84FD-E8A5B372327D}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RazorBlazorDataExchangeTester", "RazorBlazorDataExchangeTester\RazorBlazorDataExchangeTester.csproj", "{5BA162B4-EF9B-41F0-B054-71E2DD955CE9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RazorBlazorDataExchange.StressTests", "RazorBlazorDataExchange.StressTests\RazorBlazorDataExchange.StressTests.csproj", "{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -33,6 +35,10 @@ Global
 		{5BA162B4-EF9B-41F0-B054-71E2DD955CE9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5BA162B4-EF9B-41F0-B054-71E2DD955CE9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5BA162B4-EF9B-41F0-B054-71E2DD955CE9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B4D3E55C-6125-4B2F-8A39-8C21E1CF0D50}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
