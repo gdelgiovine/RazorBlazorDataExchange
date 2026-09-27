@@ -11,7 +11,7 @@ using System.ComponentModel;
 /// The broker itself is intentionally singleton. User state and subscriptions are
 /// isolated inside per-session partitions.
 /// </summary>
-public class RazorBlazorDataExchange : INotifyPropertyChanged
+public partial class RazorBlazorDataExchange : INotifyPropertyChanged
 {
     private readonly ConcurrentDictionary<string, ExchangeSessionState> _sessions =
         new(StringComparer.Ordinal);
