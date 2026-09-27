@@ -116,6 +116,18 @@ public sealed class InMemoryRazorBlazorDataExchangeTransport : IRazorBlazorDataE
         return new SubscriptionHandle(() => _subscriptions.TryRemove(id, out _));
     }
 
+    public IDisposable Subscribe(
+        string consumerId,
+        Action<RazorBlazorTransportEnvelope> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return Subscribe(consumerId, (envelope, _) =>
+        {
+            handler(envelope);
+            return ValueTask.CompletedTask;
+        });
+    }
+
     public async ValueTask PublishAsync(
         RazorBlazorTransportEnvelope envelope,
         CancellationToken cancellationToken = default)
