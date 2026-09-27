@@ -5,8 +5,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 public static class RazorBlazorDataExchangeServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the singleton cross-scope broker, circuit registry, compatibility provider
-    /// and automatic cleanup service.
+    /// Registers the singleton cross-scope broker, optional ordered facade, circuit registry,
+    /// compatibility provider, default in-memory transport and automatic cleanup service.
     /// </summary>
     public static IServiceCollection AddRazorBlazorDataExchange(
         this IServiceCollection services,
@@ -31,6 +31,8 @@ public static class RazorBlazorDataExchangeServiceCollectionExtensions
 
         services.AddHttpContextAccessor();
         services.TryAddSingleton<RazorBlazorDataExchange>();
+        services.TryAddSingleton<RazorBlazorOrderedDataExchange>();
+        services.TryAddSingleton<IRazorBlazorDataExchangeTransport, InMemoryRazorBlazorDataExchangeTransport>();
         services.TryAddSingleton<RazorBlazorCircuitHandler>();
         services.TryAddScoped<RazorBlazorDataExchangeProvider>();
 
@@ -40,6 +42,32 @@ public static class RazorBlazorDataExchangeServiceCollectionExtensions
 
         services.AddHostedService<RazorBlazorDataExchangeCleanupService>();
 
+        return services;
+    }
+
+    /// <summary>
+    /// Replaces the default in-memory transport with a custom singleton transport adapter.
+    /// The Razor/Blazor broker API is unchanged; only infrastructure registration changes.
+    /// </summary>
+    public static IServiceCollection UseRazorBlazorDataExchangeTransport<TTransport>(
+        this IServiceCollection services)
+        where TTransport : class, IRazorBlazorDataExchangeTransport
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.Replace(ServiceDescriptor.Singleton<IRazorBlazorDataExchangeTransport, TTransport>());
+        return services;
+    }
+
+    /// <summary>
+    /// Replaces the transport with a caller-supplied singleton instance.
+    /// </summary>
+    public static IServiceCollection UseRazorBlazorDataExchangeTransport(
+        this IServiceCollection services,
+        IRazorBlazorDataExchangeTransport transport)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(transport);
+        services.Replace(ServiceDescriptor.Singleton(transport));
         return services;
     }
 }
