@@ -1,150 +1,83 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.JSInterop;
-
-
-
 
 namespace RazorBlazorDataExchangeTester.Pages
 {
-    //IDbContextFactory<WebnetPRO.DataAccessLayer.NewdisContext> DbFactory;
     public class IndexModel : PageModel
     {
-        public RazorBlazorDataExchange DataExchange;
-        public int XCounter { get; set; }
-        public int Counter { get; set; } = 0;
-        
-        public string SessionId { get; set; }
-        private string Setter = "Razor";
-        private IJSRuntime JS;
+        private const string CounterProperty = "XCounter";
+        private const string SessionKey = "RazorBlazorDataExchangeSessionId";
+        private const string ActorId = "Razor:/Index";
 
-        private const string CounterSessionKey = "XCounter";
-        public bool CanCallJS = false;
-        // Nel costruttore della classe serve  per passare il servizio IHttpContextAccessor e quindi accedere alla sessione
         private readonly IHttpContextAccessor _httpContextAccessor;
 
-
-        public IndexModel(RazorBlazorDataExchange dataExchange, IJSRuntime js, IHttpContextAccessor httpContextAccessor)
+        public IndexModel(
+            RazorBlazorDataExchange dataExchange,
+            IHttpContextAccessor httpContextAccessor)
         {
             DataExchange = dataExchange;
-            DataExchange.DataChangeWithActor += OnDataChanged;
-            JS = js;
             _httpContextAccessor = httpContextAccessor;
-            this.SessionId = GetSessionID();
-            //DataExchange.StoreValue(this.SessionId, "XCounter", XCounter, Setter);  
         }
 
-
-        // Modifica il metodo GetSessionID per usare l'accessor
-        private string GetSessionID(string Name = "RazorBlazorDataaExchangeSessionId")
-        {
-            // Verifica innanzitutto se HttpContext è disponibile tramite l'accessor
-            if (_httpContextAccessor.HttpContext == null || _httpContextAccessor.HttpContext.Session == null)
-            {
-                // Se non è disponibile, genera un nuovo ID di sessione
-                return Guid.NewGuid().ToString();
-            }
-
-            string sessionId = null;
-            try
-            {
-                // Prova a recuperare il valore di sessione, gestendo possibili eccezioni
-                sessionId = _httpContextAccessor.HttpContext.Session.GetString(Name);
-            }
-            catch
-            {
-                // In caso di errore, ritorna un nuovo ID
-                return Guid.NewGuid().ToString();
-            }
-
-            // Se non esiste, creane uno nuovo e memorizzalo
-            if (string.IsNullOrEmpty(sessionId))
-            {
-                sessionId = Guid.NewGuid().ToString();
-                try
-                {
-                    _httpContextAccessor.HttpContext.Session.SetString(Name, sessionId);
-                }
-                catch
-                {
-                    // Ignora errori di scrittura nella sessione
-                }
-            }
-
-            return sessionId;
-        }
-
-        private   void OnDataChanged(object sender, DataChangeWithActorEventArgs e)
-        {
-           
-            if (!DataExchange.ShouldProcessEvent(this.SessionId, this.Setter, e))
-                return;
-
-            if (e.PropertyName == "XCounter")
-            {
-                XCounter = (int)e.Value;
-                //DataExchange.NotifyDataChange(this.SessionId, "XCounter", XCounter, Setter,null ,false);
-
-               
-
-            }
-
-            
-
-        }
-
-
-        public void OnPost()
-        {
-
-        }
-
+        public RazorBlazorDataExchange DataExchange { get; }
+        public int XCounter { get; set; }
+        public string SessionId { get; set; } = string.Empty;
 
         public void OnGet()
         {
-            this.SessionId = GetSessionID();
-            var x = DataExchange.GetValue(this.SessionId, "XCounter");
-            if (x != null)
-                XCounter = (int)DataExchange.GetValue(this.SessionId, "XCounter");
-            else // manage il caso in cui non esista il valore  
-                //DataExchange.StoreValue(this.SessionId, "XCounter", XCounter, this.Setter );
-                DataExchange.NotifyDataChange(this.SessionId, "XCounter", XCounter, Setter);
-        }
+            SessionId = GetSessionId();
 
-        public void Dispose()
-        {
-            DataExchange.DataChangeWithActor -= OnDataChanged;
+            if (DataExchange.TryGet<int>(SessionId, CounterProperty, out var current))
+            {
+                XCounter = current;
+            }
+            else
+            {
+                XCounter = 0;
+                DataExchange.StoreValue(SessionId, CounterProperty, XCounter, ActorId);
+            }
         }
 
         public IActionResult OnPostIncrementa()
         {
-            Incrementa();
+            SessionId = GetSessionId();
+            var message = DataExchange.Update<int>(
+                SessionId,
+                CounterProperty,
+                current => current + 1,
+                ActorId);
+
+            XCounter = message?.Value ?? DataExchange.Get<int>(SessionId, CounterProperty);
             return Page();
         }
 
-        public void Incrementa()
+        public async Task<JsonResult> OnPostIncrementCounter(CancellationToken cancellationToken)
         {
-            XCounter++;
-            // Notifica il cambiamento a tutti gli altri componenti
-            DataExchange.NotifyDataChange(this.SessionId, "XCounter", XCounter, Setter);
+            SessionId = GetSessionId();
+
+            var message = await DataExchange.UpdateAsync<int>(
+                SessionId,
+                CounterProperty,
+                current => current + 1,
+                ActorId,
+                cancellationToken: cancellationToken);
+
+            XCounter = message?.Value ?? DataExchange.Get<int>(SessionId, CounterProperty);
+            return new JsonResult(new { value = XCounter, version = message?.Version });
         }
 
-        [IgnoreAntiforgeryToken]
-        public JsonResult OnPostIncrementCounter()
+        private string GetSessionId()
         {
-            var x = DataExchange.GetValue(this.SessionId, "XCounter");
-            if (x != null)
-            {
-                XCounter = (int)x;
-                XCounter++;
-                // Notifica il cambiamento usando RazorBlazorDataExchange
-                DataExchange.NotifyDataChange(this.SessionId, "XCounter", XCounter, Setter);
-                
+            var session = _httpContextAccessor.HttpContext?.Session
+                ?? throw new InvalidOperationException("ASP.NET Core session is not available for this request.");
 
-            }
-            
-            return new JsonResult(new { value = XCounter });
+            var sessionId = session.GetString(SessionKey);
+            if (!string.IsNullOrWhiteSpace(sessionId))
+                return sessionId;
+
+            sessionId = Guid.NewGuid().ToString("N");
+            session.SetString(SessionKey, sessionId);
+            return sessionId;
         }
     }
-
 }
