@@ -201,8 +201,9 @@ internal static class Program
 
         gate.TrySetResult();
         await delivered.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Assert(broker.GetMetrics().DeliveredMessages == 1,
+        await WaitUntilAsync(
+            () => broker.GetMetrics().DeliveredMessages == 1,
+            TimeSpan.FromSeconds(2),
             "Deferred asynchronous delivery from synchronous Publish was not accounted for.");
 
         Console.WriteLine("PASS synchronous publish does not block async subscribers");
@@ -344,6 +345,18 @@ internal static class Program
         Assert(metrics.ActiveSessions == 1, "A session with an active subscription should be retained by default.");
 
         Console.WriteLine("PASS cleanup and metrics");
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout, string failureMessage)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!predicate())
+        {
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException(failureMessage);
+
+            await Task.Delay(10);
+        }
     }
 
     private static void Assert(bool condition, string message)
