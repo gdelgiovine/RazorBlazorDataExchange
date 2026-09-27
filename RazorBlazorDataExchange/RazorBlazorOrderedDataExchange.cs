@@ -211,15 +211,17 @@ public sealed class RazorBlazorOrderedDataExchange
 
     private static IDisposable EnterHeldScope(OrderedExchangeKey key)
     {
-        var set = HeldLanes.Value;
-        if (set is null)
-        {
-            set = new HashSet<OrderedExchangeKey>();
-            HeldLanes.Value = set;
-        }
+        // AsyncLocal values flow into child async operations. Never mutate an inherited
+        // HashSet instance because sibling subscriber flows would otherwise see each other's
+        // lane changes. Clone on entry and restore the previous snapshot on exit.
+        var previous = HeldLanes.Value;
+        var current = previous is null
+            ? new HashSet<OrderedExchangeKey>()
+            : new HashSet<OrderedExchangeKey>(previous);
 
-        set.Add(key);
-        return new HeldScope(key);
+        current.Add(key);
+        HeldLanes.Value = current;
+        return new HeldScope(previous);
     }
 
     private readonly record struct OrderedExchangeKey(string SessionId, string? PropertyName);
@@ -257,24 +259,18 @@ public sealed class RazorBlazorOrderedDataExchange
 
     private sealed class HeldScope : IDisposable
     {
-        private readonly OrderedExchangeKey _key;
+        private readonly HashSet<OrderedExchangeKey>? _previous;
         private int _disposed;
 
-        public HeldScope(OrderedExchangeKey key)
-            => _key = key;
+        public HeldScope(HashSet<OrderedExchangeKey>? previous)
+            => _previous = previous;
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
-            var set = HeldLanes.Value;
-            if (set is null)
-                return;
-
-            set.Remove(_key);
-            if (set.Count == 0)
-                HeldLanes.Value = null;
+            HeldLanes.Value = _previous;
         }
     }
 }
