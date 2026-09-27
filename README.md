@@ -48,7 +48,7 @@ one or more Blazor components
 Blazor Server renderer -> SignalR -> browser
 ```
 
-A Razor publication is delivered to **all interested Blazor actors in the same session**, including multiple instances of the same component type.
+A Razor publication is delivered to **all interested Blazor actors in the same session**, including multiple instances of the same component type and instances living in different Blazor Server circuits.
 
 ### Blazor -> Razor
 
@@ -80,10 +80,11 @@ This JS interop path complements the broker; it does not replace the Blazor -> R
 - Per-session state and subscription partitions
 - Full Razor -> Blazor and Blazor -> Razor publication symmetry
 - Fan-out to multiple Blazor components in the same session
+- Fan-out across multiple Blazor Server/SignalR circuits that share the same exchange session
 - Property-specific typed subscriptions
 - Typed session-wide subscriptions
 - Raw session-wide subscriptions with no property restriction
-- Unique `ActorId` support so multiple instances of the same component can communicate correctly
+- Unique per-instance `ActorId` so multiple instances of the same logical component can communicate correctly, including across circuits
 - Disposable subscription handles to prevent retained component/page references
 - Typed `Publish<T>` / `PublishAsync<T>` APIs
 - Atomic `Update<T>` / `UpdateAsync<T>` read-modify-write operations
@@ -101,7 +102,7 @@ This JS interop path complements the broker; it does not replace the Blazor -> R
 - Backward-compatible legacy notification events
 - Circuit registry that does not replace or scope the singleton broker
 - Dependency-injection registration through `AddRazorBlazorDataExchange(...)`
-- CI build and stress-test workflow
+- CI build, stress-test and browser end-to-end workflow
 
 ## Subscription model
 
@@ -175,15 +176,9 @@ Get -> modify -> Store
 
 where two HTTP requests or circuits could otherwise read the same old value and overwrite one another.
 
-## Message envelope
+## Message envelope and actor identity
 
-Typed publications expose an immutable envelope similar to:
-
-```csharp
-ExchangeMessage<T>
-```
-
-containing:
+Typed publications expose an immutable `ExchangeMessage<T>` envelope containing:
 
 - `SessionId`
 - `PropertyName`
@@ -194,7 +189,15 @@ containing:
 - `Version`
 - `Timestamp`
 
-`ActorId` identifies the concrete participant instance, not merely its component type. This allows, for example, `CounterComponent:1` and `CounterComponent:2` to receive each other's changes.
+`ActorId` identifies the **concrete participant instance**, not merely its component type or logical component name. This distinction is required because the same logical component can exist in multiple tabs/circuits at the same time.
+
+The sample therefore keeps `ComponentId` as the logical host identifier but builds a Blazor actor identity from both the logical id and a per-instance GUID:
+
+```text
+Blazor:CounterComponent:CounterComponent1:<instance-guid>
+```
+
+Without the per-instance portion, two `CounterComponent1` instances in separate SignalR circuits would incorrectly classify each other's publications as self-notifications and suppress legitimate cross-circuit communication.
 
 `CorrelationId` identifies a notification chain and is used to suppress recursive A -> B -> A re-publication loops without disabling normal communication between different actors.
 
@@ -259,7 +262,7 @@ Sample Razor Class Library containing `CounterComponent.razor`.
 
 The component demonstrates:
 
-- unique actor identity
+- logical component identity separated from concrete actor identity
 - typed subscription
 - subscription disposal
 - atomic updates
@@ -270,7 +273,9 @@ The component demonstrates:
 
 ASP.NET Core Razor Pages application demonstrating the complete hosting scenario.
 
-The sample intentionally uses the classic Blazor Server hosting model because its purpose is embedding Blazor Server components in an existing Razor Pages application.
+The home page intentionally hosts two `CounterComponent` instances so Razor -> Blazor, Blazor -> Razor and Blazor -> Blazor fan-out can be observed directly.
+
+The sample uses the classic Blazor Server hosting model because its purpose is embedding Blazor Server components in an existing Razor Pages application.
 
 ### `RazorBlazorDataExchange.StressTests`
 
@@ -286,6 +291,22 @@ Dependency-free executable test harness covering:
 - correlation-loop suppression
 - subscriber failure isolation
 - cleanup and metrics
+
+### `RazorBlazorDataExchange.E2ETests`
+
+Playwright/Chromium end-to-end test harness that runs the real Razor Pages + Blazor Server application and validates the complete HTTP/SignalR/browser path.
+
+The browser suite covers:
+
+- Razor -> two Blazor components on the same page
+- Blazor component #1 -> Razor DOM + Blazor component #2
+- Blazor component #2 -> Razor DOM + Blazor component #1
+- persistence of Blazor-originated state across a later Razor request/reload
+- two tabs sharing the same ASP.NET session but using independent Blazor Server circuits
+- Razor publication fan-out across those circuits
+- Blazor publication fan-out across those circuits
+- unique actor identity for equal logical component ids in different circuits
+- isolation between independent browser sessions
 
 ### `EFHelper`
 
@@ -325,7 +346,7 @@ The automatic cleanup service does not remove an idle session that still contain
 
 The snapshot does not expose session identifiers or stored values.
 
-## Running the sample
+## Running the sample and tests
 
 Prerequisites:
 
@@ -345,11 +366,38 @@ Run the sample application:
 dotnet run --project RazorBlazorDataExchangeTester
 ```
 
-Run the 0.5 broker tests:
+Run the 0.5 broker stress tests:
 
 ```bash
 dotnet run --project RazorBlazorDataExchange.StressTests -c Release
 ```
+
+For the browser end-to-end suite, build first and install the Playwright Chromium runtime:
+
+```bash
+pwsh RazorBlazorDataExchange.E2ETests/bin/Release/net8.0/playwright.ps1 install chromium
+```
+
+Start the tester on a known URL and run:
+
+```bash
+RBDX_BASE_URL=http://127.0.0.1:5087 \
+  dotnet run --project RazorBlazorDataExchange.E2ETests -c Release --no-build
+```
+
+The GitHub Actions workflow performs build, stress tests, Chromium installation, tester startup and browser E2E validation automatically.
+
+## Validated 0.5 communication matrix
+
+| Publisher | Receiver | Same circuit | Different circuit, same session | Different session |
+|---|---|---:|---:|---:|
+| Razor/MVC | Blazor | yes | yes | isolated |
+| Blazor | Blazor | yes | yes | isolated |
+| Blazor | Razor/MVC broker subscriber | yes | yes | isolated |
+| Blazor | subsequent Razor/MVC request via shared state | yes | yes | isolated |
+| Blazor | already-rendered Razor DOM | JS interop in originating page | not treated as a live Razor server UI | isolated |
+
+The different-circuit cases are validated using two browser tabs that share the same ASP.NET session cookie while maintaining independent Blazor Server/SignalR circuits.
 
 ## Scope and scaling
 
@@ -363,6 +411,7 @@ In a multi-node deployment, each server process has its own broker instance. A f
 - Embedding interactive Blazor Server islands into existing Razor applications
 - Synchronizing state between Razor requests and live Blazor circuits
 - Coordinating multiple Blazor components hosted by one Razor page
+- Coordinating components in multiple circuits/tabs belonging to the same exchange session
 - Preserving a traditional Razor/MVC application while progressively replacing individual UI areas with Blazor
 
 ## License
