@@ -143,10 +143,7 @@ public partial class RazorBlazorDataExchange
             if (string.Equals(ActorId, message.ActorId, StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            if (message.Value is null)
-                return !typeof(T).IsValueType || Nullable.GetUnderlyingType(typeof(T)) is not null;
-
-            return typeof(T).IsAssignableFrom(message.Value.GetType());
+            return CanDeliverTo<T>(message);
         }
 
         public ValueTask InvokeAsync(ExchangeMessage message, CancellationToken cancellationToken)
