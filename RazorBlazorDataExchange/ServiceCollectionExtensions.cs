@@ -14,9 +14,20 @@ public static class RazorBlazorDataExchangeServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.AddOptions<RazorBlazorDataExchangeOptions>();
+        var optionsBuilder = services
+            .AddOptions<RazorBlazorDataExchangeOptions>()
+            .Validate(options => options.SessionIdleTimeout >= TimeSpan.Zero,
+                "SessionIdleTimeout cannot be negative.")
+            .Validate(options => options.CleanupInterval >= TimeSpan.Zero,
+                "CleanupInterval cannot be negative. Use TimeSpan.Zero to disable automatic cleanup.")
+            .Validate(options => options.CorrelationRetention >= TimeSpan.Zero,
+                "CorrelationRetention cannot be negative.")
+            .Validate(options => options.MaxModificationHistory >= 0,
+                "MaxModificationHistory cannot be negative.")
+            .ValidateOnStart();
+
         if (configure is not null)
-            services.Configure(configure);
+            optionsBuilder.Configure(configure);
 
         services.AddHttpContextAccessor();
         services.TryAddSingleton<RazorBlazorDataExchange>();
