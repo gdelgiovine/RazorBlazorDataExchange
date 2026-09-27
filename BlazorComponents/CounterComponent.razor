@@ -4,11 +4,24 @@
 @inject RazorBlazorDataExchange DataExchange
 @inject IJSRuntime JS
 
-<p>DataExchange Service Instance HashCode in Blazor Component: @DataExchange.GetHashCode()</p>
-<p>DataExchange SessionId in Blazor Component: @RazorBlazorDataExchangeSessionId</p>
-<p>DataExchange Blazor Component ComponentId: @ComponentId</p>
-<p>@counterText @XCounter</p>
-<button class="btn btn-primary" @onclick="IncrementCount">@buttonText</button>
+<div class="blazor-counter card mb-3"
+     data-testid="blazor-counter"
+     data-component-id="@ComponentId"
+     data-actor-id="@_actorId">
+    <div class="card-body">
+        <h5 class="card-title">Blazor component @ComponentId</h5>
+        <p class="mb-1">DataExchange Service Instance HashCode: <span data-testid="broker-hash">@DataExchange.GetHashCode()</span></p>
+        <p class="mb-1">SessionId: <span data-testid="session-id">@RazorBlazorDataExchangeSessionId</span></p>
+        <p class="mb-2">ActorId: <span data-testid="actor-id">@_actorId</span></p>
+        <p class="lead mb-3">@counterText <span data-testid="counter-value">@XCounter</span></p>
+        <button type="button"
+                class="btn btn-primary"
+                data-testid="increment-blazor"
+                @onclick="IncrementCount">
+            @buttonText
+        </button>
+    </div>
+</div>
 
 @namespace BlazorComponents
 
@@ -93,9 +106,10 @@
             XCounter = _currentCount;
         }
 
-        // A Razor Page is not a live server-side UI after the HTTP response has been sent.
-        // JS interop is therefore the live Blazor -> already-rendered Razor DOM channel.
-        await JS.InvokeVoidAsync(JsMessageHandler, string.Empty, XCounter);
+        // The broker carries the Blazor -> Razor state transition server-side.
+        // The Razor Page instance that rendered this DOM is no longer live, therefore
+        // JS interop is the final live UI hop for the already-rendered Razor document.
+        await JS.InvokeVoidAsync(JsMessageHandler, _actorId, XCounter);
     }
 
     private async ValueTask OnCounterChangedAsync(
