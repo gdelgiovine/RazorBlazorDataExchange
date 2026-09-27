@@ -6,7 +6,9 @@ internal static class Program
 
         await TestSessionIsolation();
         await TestTypedRoutingAndActorFiltering();
+        await TestNullTypedRouting();
         await TestBidirectionalRazorBlazorFanOut();
+        await TestSynchronousPublishDoesNotBlockAsyncSubscriber();
         await TestAtomicConcurrency();
         await TestCorrelationLoopSuppression();
         await TestSubscriberFailureIsolation();
@@ -54,6 +56,54 @@ internal static class Program
         Console.WriteLine("PASS typed routing and actor filtering");
     }
 
+    private static async Task TestNullTypedRouting()
+    {
+        const string sessionId = "null-routing-session";
+        var broker = new RazorBlazorDataExchange();
+        var nullableIntCalls = 0;
+        var stringCalls = 0;
+        var objectCalls = 0;
+        var propertyNullableIntCalls = 0;
+        var propertyStringCalls = 0;
+
+        using var nullableInt = broker.SubscribeSession<int?>(
+            sessionId,
+            "NullableIntObserver",
+            _ => Interlocked.Increment(ref nullableIntCalls));
+
+        using var stringObserver = broker.SubscribeSession<string>(
+            sessionId,
+            "StringObserver",
+            _ => Interlocked.Increment(ref stringCalls));
+
+        using var objectObserver = broker.SubscribeSession<object>(
+            sessionId,
+            "ObjectObserver",
+            _ => Interlocked.Increment(ref objectCalls));
+
+        using var propertyNullableInt = broker.Subscribe<int?>(
+            sessionId,
+            "MaybeNumber",
+            "PropertyNullableIntObserver",
+            _ => Interlocked.Increment(ref propertyNullableIntCalls));
+
+        using var propertyString = broker.Subscribe<string>(
+            sessionId,
+            "MaybeNumber",
+            "PropertyStringObserver",
+            _ => Interlocked.Increment(ref propertyStringCalls));
+
+        await broker.PublishAsync<int?>(sessionId, "MaybeNumber", null, "Publisher");
+
+        Assert(nullableIntCalls == 1, "Nullable<int> session subscriber did not receive a declared nullable-int null.");
+        Assert(stringCalls == 0, "String session subscriber incorrectly received a null declared as nullable int.");
+        Assert(objectCalls == 1, "Object session subscriber should accept a nullable-int publication.");
+        Assert(propertyNullableIntCalls == 1, "Nullable<int> property subscriber did not receive the null publication.");
+        Assert(propertyStringCalls == 0, "String property subscriber incorrectly received a nullable-int null.");
+
+        Console.WriteLine("PASS declared-type routing for null payloads");
+    }
+
     private static async Task TestBidirectionalRazorBlazorFanOut()
     {
         const string sessionId = "bidirectional-session";
@@ -84,7 +134,6 @@ internal static class Program
             "Blazor:OtherSession",
             _ => Interlocked.Increment(ref otherSessionCalls));
 
-        // A Razor/MVC coordinator can observe the whole session, not only one property.
         using var razorCoordinator = broker.SubscribeSession(
             sessionId,
             "Razor:PageCoordinator",
@@ -98,15 +147,12 @@ internal static class Program
                 }
             });
 
-        // Razor -> every interested Blazor component in the same session.
         await broker.PublishAsync(sessionId, counterProperty, 5, "Razor:/Index");
 
         Assert(blazorComponent1Calls == 1, "Razor -> Blazor component 1 was not delivered.");
         Assert(blazorComponent2Calls == 1, "Razor -> Blazor component 2 was not delivered.");
         Assert(otherSessionCalls == 0, "Razor publication crossed the session boundary.");
 
-        // Blazor -> Razor and peer Blazor component. The publishing Blazor actor does not
-        // receive a self-echo, but every other interested actor in the session does.
         await broker.PublishAsync(sessionId, counterProperty, 6, "Blazor:Counter:1");
 
         Assert(blazorComponent1Calls == 1, "Blazor publisher received an unwanted self-echo.");
@@ -115,7 +161,6 @@ internal static class Program
         Assert(broker.Get<int>(sessionId, counterProperty) == 6,
             "Blazor publication was not persisted for the next Razor/MVC request.");
 
-        // Session-wide Razor subscription must not be constrained to the Counter property.
         await broker.PublishAsync(sessionId, "Status", "ready", "Blazor:Status:1");
 
         Assert(razorObservedBlazorMessages == 2,
@@ -124,6 +169,43 @@ internal static class Program
             "Session-wide routing incorrectly restricted Blazor -> Razor communication by property.");
 
         Console.WriteLine("PASS Razor <-> Blazor bidirectional fan-out");
+    }
+
+    private static async Task TestSynchronousPublishDoesNotBlockAsyncSubscriber()
+    {
+        const string sessionId = "sync-dispatch-session";
+        var broker = new RazorBlazorDataExchange();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var subscription = broker.Subscribe<int>(
+            sessionId,
+            "Counter",
+            "AsyncSubscriber",
+            async (_, cancellationToken) =>
+            {
+                await gate.Task.WaitAsync(cancellationToken);
+                delivered.TrySetResult();
+            });
+
+        var publishTask = Task.Run(() => broker.Publish(sessionId, "Counter", 1, "SyncPublisher"));
+        var winner = await Task.WhenAny(publishTask, Task.Delay(TimeSpan.FromSeconds(2)));
+
+        if (winner != publishTask)
+        {
+            gate.TrySetResult();
+            await publishTask;
+            throw new InvalidOperationException(
+                "Synchronous Publish blocked waiting for an asynchronous subscriber and can deadlock a UI synchronization context.");
+        }
+
+        gate.TrySetResult();
+        await delivered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert(broker.GetMetrics().DeliveredMessages == 1,
+            "Deferred asynchronous delivery from synchronous Publish was not accounted for.");
+
+        Console.WriteLine("PASS synchronous publish does not block async subscribers");
     }
 
     private static async Task TestAtomicConcurrency()
@@ -246,13 +328,20 @@ internal static class Program
         var broker = new RazorBlazorDataExchange();
         broker.StoreValue("cleanup-session", "Value", 123, "Seeder");
 
+        using var liveSubscription = broker.Subscribe<int>(
+            "live-session",
+            "Value",
+            "LiveSubscriber",
+            _ => { });
+
         await Task.Delay(5);
+
         var removed = broker.CleanupInactiveSessions(TimeSpan.Zero);
         var metrics = broker.GetMetrics();
 
-        Assert(removed == 1, "Inactive session cleanup did not remove the expected session.");
+        Assert(removed == 1, "Inactive session cleanup did not remove exactly the unsubscribed inactive session.");
         Assert(metrics.RemovedSessions == 1, "Removed-session metric was not incremented.");
-        Assert(metrics.ActiveSessions == 0, "Removed session is still reported as active.");
+        Assert(metrics.ActiveSessions == 1, "A session with an active subscription should be retained by default.");
 
         Console.WriteLine("PASS cleanup and metrics");
     }
