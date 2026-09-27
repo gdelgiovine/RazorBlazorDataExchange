@@ -43,6 +43,10 @@ internal static class Program
         await WaitForInteractiveComponentsAsync(page);
         await WaitForAllVisibleCountersAsync(page, 0);
 
+        var component1Actor = await ReadActorIdAsync(page, "CounterComponent1");
+        var component2Actor = await ReadActorIdAsync(page, "CounterComponent2");
+        Assert(component1Actor != component2Actor, "Two component instances in the same circuit share the same ActorId.");
+
         // Razor -> Blazor #1 + Blazor #2.
         await page.Locator("[data-testid='increment-razor']").ClickAsync();
         await WaitForAllVisibleCountersAsync(page, 1);
@@ -51,18 +55,12 @@ internal static class Program
         // Blazor #1 -> Razor DOM + Blazor #2.
         await page.Locator("[data-component-id='CounterComponent1'] [data-testid='increment-blazor']").ClickAsync();
         await WaitForAllVisibleCountersAsync(page, 2);
-        await WaitForTextAsync(
-            page,
-            "[data-testid='last-update-source']",
-            "Blazor:CounterComponent:CounterComponent1");
+        await WaitForTextAsync(page, "[data-testid='last-update-source']", component1Actor);
 
         // Blazor #2 -> Razor DOM + Blazor #1.
         await page.Locator("[data-component-id='CounterComponent2'] [data-testid='increment-blazor']").ClickAsync();
         await WaitForAllVisibleCountersAsync(page, 3);
-        await WaitForTextAsync(
-            page,
-            "[data-testid='last-update-source']",
-            "Blazor:CounterComponent:CounterComponent2");
+        await WaitForTextAsync(page, "[data-testid='last-update-source']", component2Actor);
 
         // The Blazor publication is persisted in the singleton broker and is visible to
         // a subsequent Razor HTTP request, not only to the already-rendered DOM via JS.
@@ -92,6 +90,12 @@ internal static class Program
         var sessionA = await ReadTextAsync(pageA, "[data-testid='razor-session-id']");
         var sessionB = await ReadTextAsync(pageB, "[data-testid='razor-session-id']");
         Assert(sessionA == sessionB, "Two tabs in the same browser context did not share the exchange session.");
+
+        var pageAActor1 = await ReadActorIdAsync(pageA, "CounterComponent1");
+        var pageBActor1 = await ReadActorIdAsync(pageB, "CounterComponent1");
+        Assert(
+            pageAActor1 != pageBActor1,
+            "Equal logical ComponentIds in separate circuits resolved to the same ActorId.");
 
         // Razor request in circuit/page B fans out to Blazor components in BOTH circuits.
         await pageB.Locator("[data-testid='increment-razor']").ClickAsync();
@@ -192,16 +196,14 @@ internal static class Program
         await page.Locator("[data-component-id='CounterComponent2'] [data-testid='increment-blazor']")
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = TimeoutMs });
 
-        // A rendered button can exist before the server-side circuit is ready. The actor id is
-        // produced during component parameter binding and is therefore a useful readiness signal.
-        await WaitForTextAsync(
+        await WaitForTextPrefixAsync(
             page,
             "[data-component-id='CounterComponent1'] [data-testid='actor-id']",
-            "Blazor:CounterComponent:CounterComponent1");
-        await WaitForTextAsync(
+            "Blazor:CounterComponent:CounterComponent1:");
+        await WaitForTextPrefixAsync(
             page,
             "[data-component-id='CounterComponent2'] [data-testid='actor-id']",
-            "Blazor:CounterComponent:CounterComponent2");
+            "Blazor:CounterComponent:CounterComponent2:");
     }
 
     private static Task WaitForAllVisibleCountersAsync(IPage page, int expected)
@@ -214,6 +216,9 @@ internal static class Program
         => Task.WhenAll(
             WaitForIntAsync(page, "[data-component-id='CounterComponent1'] [data-testid='counter-value']", expected),
             WaitForIntAsync(page, "[data-component-id='CounterComponent2'] [data-testid='counter-value']", expected));
+
+    private static Task<string> ReadActorIdAsync(IPage page, string componentId)
+        => ReadTextAsync(page, $"[data-component-id='{componentId}'] [data-testid='actor-id']");
 
     private static async Task WaitForIntAsync(IPage page, string selector, int expected)
     {
@@ -257,6 +262,30 @@ internal static class Program
 
         var actual = await ReadTextAsync(page, selector);
         throw new InvalidOperationException($"Timed out waiting for {selector} to become '{expected}'. Actual: '{actual}'.");
+    }
+
+    private static async Task WaitForTextPrefixAsync(IPage page, string selector, string expectedPrefix)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.ElapsedMilliseconds < TimeoutMs)
+        {
+            try
+            {
+                var actual = await ReadTextAsync(page, selector);
+                if (actual.StartsWith(expectedPrefix, StringComparison.Ordinal))
+                    return;
+            }
+            catch
+            {
+                // Element may not exist yet.
+            }
+
+            await Task.Delay(100);
+        }
+
+        var finalValue = await ReadTextAsync(page, selector);
+        throw new InvalidOperationException(
+            $"Timed out waiting for {selector} to start with '{expectedPrefix}'. Actual: '{finalValue}'.");
     }
 
     private static async Task<int> ReadIntAsync(IPage page, string selector)
