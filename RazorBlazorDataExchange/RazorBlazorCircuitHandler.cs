@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Components.Server.Circuits;
+using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
 
 /// <summary>
@@ -10,8 +11,18 @@ public class RazorBlazorCircuitHandler : CircuitHandler
     private readonly RazorBlazorDataExchange _exchange;
     private readonly ConcurrentDictionary<string, CircuitRegistration> _circuits = new(StringComparer.Ordinal);
 
-    public RazorBlazorCircuitHandler(RazorBlazorDataExchange exchange)
-        => _exchange = exchange;
+    /// <summary>
+    /// Preserves the original public constructor signature while resolving the application-wide
+    /// singleton broker once. AddRazorBlazorDataExchange registers the broker as singleton, so
+    /// retaining this reference after the temporary resolution scope is disposed is intentional.
+    /// </summary>
+    public RazorBlazorCircuitHandler(IServiceScopeFactory scopeFactory)
+    {
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+
+        using var scope = scopeFactory.CreateScope();
+        _exchange = scope.ServiceProvider.GetRequiredService<RazorBlazorDataExchange>();
+    }
 
     public RazorBlazorDataExchange Exchange => _exchange;
 
