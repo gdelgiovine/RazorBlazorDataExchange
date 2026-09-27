@@ -4,7 +4,7 @@
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.5.0**.
+Current core version: **0.6.0**.
 
 ## Why the broker is Singleton
 
@@ -24,7 +24,7 @@ request scope                             circuit scope
 
 The singleton broker is therefore the common in-process rendezvous point between the HTTP request side and the Blazor Server/SignalR circuit side.
 
-The broker is singleton, but **user data is not global**. Version 0.5 partitions state and subscriptions by `SessionId`.
+The broker is singleton, but **user data is not global**. State and subscriptions are partitioned by `SessionId`.
 
 ## Bidirectional communication model
 
@@ -74,35 +74,48 @@ Blazor component -> IJSRuntime -> JavaScript in Razor host page -> DOM
 
 This JS interop path complements the broker; it does not replace the Blazor -> Razor shared-state path.
 
-## Version 0.5 features
+## Version 0.6 features
 
-- Intentional singleton cross-scope broker
-- Per-session state and subscription partitions
-- Full Razor -> Blazor and Blazor -> Razor publication symmetry
-- Fan-out to multiple Blazor components in the same session
-- Fan-out across multiple Blazor Server/SignalR circuits that share the same exchange session
-- Property-specific typed subscriptions
-- Typed session-wide subscriptions
-- Raw session-wide subscriptions with no property restriction
-- Unique per-instance `ActorId` so multiple instances of the same logical component can communicate correctly, including across circuits
-- Disposable subscription handles to prevent retained component/page references
-- Typed `Publish<T>` / `PublishAsync<T>` APIs
-- Atomic `Update<T>` / `UpdateAsync<T>` read-modify-write operations
-- Typed `Get<T>` / `TryGet<T>` APIs
-- `MessageId`, `CorrelationId`, per-property `Version`, and timestamp metadata
-- Correlation-based recursive-loop suppression
-- Null-safe message metadata
-- Per-session locking instead of one application-wide state lock
-- Subscriber exception isolation
-- Synchronous and asynchronous dispatch paths
-- `LastAccess` tracking and inactive-session cleanup
-- Background cleanup service
-- Runtime metrics snapshot
-- `ILogger` diagnostics
-- Backward-compatible legacy notification events
-- Circuit registry that does not replace or scope the singleton broker
-- Dependency-injection registration through `AddRazorBlazorDataExchange(...)`
-- CI build, stress-test and browser end-to-end workflow
+Version 0.6 preserves all 0.5 broker behavior and adds optional ordering plus a transport service-provider interface.
+
+Core broker features include:
+
+- intentional singleton cross-scope broker;
+- per-session state and subscription partitions;
+- full Razor -> Blazor and Blazor -> Razor publication symmetry;
+- fan-out to multiple Blazor components in the same session;
+- fan-out across multiple Blazor Server/SignalR circuits that share the same exchange session;
+- property-specific typed subscriptions;
+- typed and raw session-wide subscriptions;
+- unique per-instance `ActorId` so equal logical components in different circuits remain distinct actors;
+- disposable subscription handles;
+- typed `Publish<T>` / `PublishAsync<T>` APIs;
+- atomic `Update<T>` / `UpdateAsync<T>` read-modify-write operations;
+- typed `Get<T>` / `TryGet<T>` APIs;
+- `MessageId`, `CorrelationId`, per-property `Version`, and timestamp metadata;
+- correlation-based recursive-loop suppression;
+- per-session locking;
+- subscriber exception isolation;
+- synchronous and asynchronous dispatch paths;
+- inactive-session cleanup, metrics and `ILogger` diagnostics;
+- backward-compatible legacy notification events;
+- circuit registry that never replaces or scopes the singleton broker.
+
+New in 0.6:
+
+- optional `RazorBlazorOrderedDataExchange` facade;
+- ordering by `(SessionId, PropertyName)` or by the entire `SessionId`;
+- completion ordering that includes asynchronous subscriber completion;
+- reentrant same-lane handling to avoid notification-chain deadlocks;
+- on-demand reference-counted ordering lanes that retire automatically;
+- ordered-exchange metrics;
+- `IRazorBlazorDataExchangeTransport` infrastructure SPI;
+- default broadcast `InMemoryRazorBlazorDataExchangeTransport`;
+- JSON-based `RazorBlazorTransportEnvelope` suitable for future process boundaries;
+- replaceable transport registration without changing the broker API;
+- dedicated 0.6 ordering/transport tests in CI.
+
+Detailed 0.6 architecture notes are in [`docs/v0.6-ordered-transport.md`](docs/v0.6-ordered-transport.md).
 
 ## Subscription model
 
@@ -176,6 +189,35 @@ Get -> modify -> Store
 
 where two HTTP requests or circuits could otherwise read the same old value and overwrite one another.
 
+## Optional ordered publication
+
+The normal broker remains unordered across independent concurrent publishers. When a workflow needs deterministic completion order, resolve `RazorBlazorOrderedDataExchange` and use its asynchronous methods.
+
+Default ordering is per session/property:
+
+```csharp
+await orderedExchange.PublishAsync(
+    sessionId,
+    "Status",
+    "Ready",
+    actorId);
+```
+
+This serializes operations targeting the same `(SessionId, PropertyName)` while allowing different properties and sessions to progress concurrently.
+
+For workflows that cascade across several related properties, serialize the entire session:
+
+```csharp
+await orderedExchange.UpdateAsync<int>(
+    sessionId,
+    "Counter",
+    current => current + 1,
+    actorId,
+    orderingScope: RazorBlazorExchangeOrderingScope.Session);
+```
+
+A causally nested publication on a lane already held by the current notification chain executes inside that lane rather than attempting to acquire it again. This avoids self-deadlock during legitimate Razor/Blazor notification cascades.
+
 ## Message envelope and actor identity
 
 Typed publications expose an immutable `ExchangeMessage<T>` envelope containing:
@@ -200,6 +242,33 @@ Blazor:CounterComponent:CounterComponent1:<instance-guid>
 Without the per-instance portion, two `CounterComponent1` instances in separate SignalR circuits would incorrectly classify each other's publications as self-notifications and suppress legitimate cross-circuit communication.
 
 `CorrelationId` identifies a notification chain and is used to suppress recursive A -> B -> A re-publication loops without disabling normal communication between different actors.
+
+## Transport abstraction
+
+`IRazorBlazorDataExchangeTransport` is an infrastructure SPI for future multi-process adapters. The default implementation is `InMemoryRazorBlazorDataExchangeTransport`.
+
+Its wire-oriented `RazorBlazorTransportEnvelope` contains:
+
+- origin node id;
+- session/property/actor identity;
+- message and correlation ids;
+- source version and timestamp;
+- declared value type name;
+- JSON payload.
+
+The envelope deliberately avoids live CLR references and `System.Type` instances.
+
+Replace the default transport through DI:
+
+```csharp
+services
+    .AddRazorBlazorDataExchange()
+    .UseRazorBlazorDataExchangeTransport<MyRedisTransport>();
+```
+
+where `MyRedisTransport` implements `IRazorBlazorDataExchangeTransport`.
+
+**0.6 does not yet claim transparent distributed state replication.** A real Redis/Service Bus adapter still requires explicit policies for deduplication, remote/local version reconciliation, reconnect/replay, delivery guarantees, node-origin filtering, distributed ordering and transport authorization. The SPI is intentionally introduced before those policies so the proven 0.5 broker semantics are not silently changed.
 
 ## Legacy API compatibility
 
@@ -232,11 +301,13 @@ services.AddRazorBlazorDataExchange(options =>
 
 The extension registers:
 
-- `RazorBlazorDataExchange` as singleton
-- `RazorBlazorCircuitHandler` as the Blazor `CircuitHandler`
-- `RazorBlazorDataExchangeProvider`
-- automatic inactive-session cleanup
-- required HTTP context access
+- `RazorBlazorDataExchange` as singleton;
+- `RazorBlazorOrderedDataExchange` as singleton;
+- `IRazorBlazorDataExchangeTransport` with the in-memory singleton transport by default;
+- `RazorBlazorCircuitHandler` as the Blazor `CircuitHandler`;
+- `RazorBlazorDataExchangeProvider`;
+- automatic inactive-session cleanup;
+- required HTTP context access.
 
 The circuit handler tracks circuits but **does not create one exchange instance per circuit**. All circuits and Razor/MVC requests resolve the same singleton broker.
 
@@ -244,12 +315,14 @@ The circuit handler tracks circuits but **does not create one exchange instance 
 
 ### `RazorBlazorDataExchange`
 
-Core broker library.
-
-Important files/classes include:
+Core broker library. Important files/classes include:
 
 - `RazorBlazorDataExchange`
 - `ExchangeMessage` / `ExchangeMessage<T>`
+- `RazorBlazorOrderedDataExchange`
+- `IRazorBlazorDataExchangeTransport`
+- `InMemoryRazorBlazorDataExchangeTransport`
+- `RazorBlazorTransportEnvelope`
 - `RazorBlazorDataExchangeOptions`
 - `RazorBlazorCircuitHandler`
 - `RazorBlazorDataExchangeProvider`
@@ -262,12 +335,12 @@ Sample Razor Class Library containing `CounterComponent.razor`.
 
 The component demonstrates:
 
-- logical component identity separated from concrete actor identity
-- typed subscription
-- subscription disposal
-- atomic updates
-- UI updates on the Blazor dispatcher
-- JS interop for immediate Blazor -> Razor DOM updates
+- logical component identity separated from concrete actor identity;
+- typed subscription;
+- subscription disposal;
+- atomic updates;
+- UI updates on the Blazor dispatcher;
+- JS interop for immediate Blazor -> Razor DOM updates.
 
 ### `RazorBlazorDataExchangeTester`
 
@@ -279,34 +352,26 @@ The sample uses the classic Blazor Server hosting model because its purpose is e
 
 ### `RazorBlazorDataExchange.StressTests`
 
-Dependency-free executable test harness covering:
+Dependency-free executable test harness covering the core 0.5/0.6 broker invariants, including session isolation, actor filtering, bidirectional fan-out, 24,000 concurrent atomic updates, correlation-loop suppression, failure isolation, cleanup and metrics.
 
-- session isolation
-- actor filtering
-- Razor -> multiple Blazor fan-out
-- Blazor -> Razor session-wide delivery
-- Blazor -> peer Blazor delivery
-- persistence of Blazor-originated state for subsequent Razor requests
-- 24,000 concurrent atomic updates
-- correlation-loop suppression
-- subscriber failure isolation
-- cleanup and metrics
+### `RazorBlazorDataExchange.V06Tests`
+
+Executable test harness dedicated to 0.6 behavior:
+
+- same-route ordered completion;
+- independent property-lane concurrency;
+- session-wide ordering across properties;
+- reentrant same-route publication;
+- concurrent ordered atomic updates;
+- transport broadcast and failure isolation;
+- JSON envelope round-trip;
+- DI registration and transport replacement.
 
 ### `RazorBlazorDataExchange.E2ETests`
 
 Playwright/Chromium end-to-end test harness that runs the real Razor Pages + Blazor Server application and validates the complete HTTP/SignalR/browser path.
 
-The browser suite covers:
-
-- Razor -> two Blazor components on the same page
-- Blazor component #1 -> Razor DOM + Blazor component #2
-- Blazor component #2 -> Razor DOM + Blazor component #1
-- persistence of Blazor-originated state across a later Razor request/reload
-- two tabs sharing the same ASP.NET session but using independent Blazor Server circuits
-- Razor publication fan-out across those circuits
-- Blazor publication fan-out across those circuits
-- unique actor identity for equal logical component ids in different circuits
-- isolation between independent browser sessions
+The browser suite covers Razor -> Blazor, Blazor -> Razor DOM, Blazor -> peer Blazor, persistence across Razor reloads, cross-circuit fan-out in two tabs sharing one ASP.NET session, unique actor identity and independent-session isolation.
 
 ### `EFHelper`
 
@@ -314,7 +379,7 @@ Ancillary Entity Framework Core helper project. It is not required by the Razor/
 
 ## Concurrency and lifecycle
 
-State synchronization is performed per session. Independent sessions therefore do not contend on one single application-wide state lock.
+Core state synchronization is performed per session. Independent sessions therefore do not contend on one application-wide state lock.
 
 Subscriptions return `IDisposable` handles. Blazor components should dispose them when the component is destroyed:
 
@@ -331,20 +396,15 @@ public void Dispose()
 
 The automatic cleanup service does not remove an idle session that still contains active subscriptions unless explicitly configured to do so.
 
+Ordered-exchange lanes are created on demand and retired after the final active/waiting operation releases them.
+
 ## Metrics
 
-`GetMetrics()` returns a point-in-time snapshot containing:
+`RazorBlazorDataExchange.GetMetrics()` reports broker sessions, values, subscriptions, publication/delivery counts, recursive suppression, delivery failures and removed sessions.
 
-- active sessions
-- stored values
-- active subscriptions
-- published messages
-- delivered messages
-- suppressed recursive messages
-- delivery failures
-- removed sessions
+`RazorBlazorOrderedDataExchange.GetMetrics()` reports active ordering lanes, entered/completed/cancelled ordered operations and reentrant bypasses.
 
-The snapshot does not expose session identifiers or stored values.
+`IRazorBlazorDataExchangeTransport.GetMetrics()` reports transport subscribers, published/delivered envelopes and delivery failures.
 
 ## Running the sample and tests
 
@@ -366,13 +426,19 @@ Run the sample application:
 dotnet run --project RazorBlazorDataExchangeTester
 ```
 
-Run the 0.5 broker stress tests:
+Run the broker stress tests:
 
 ```bash
 dotnet run --project RazorBlazorDataExchange.StressTests -c Release
 ```
 
-For the browser end-to-end suite, build first and install the Playwright Chromium runtime:
+Run the 0.6 ordering/transport tests:
+
+```bash
+dotnet run --project RazorBlazorDataExchange.V06Tests -c Release
+```
+
+For the browser end-to-end suite, build first and install Playwright Chromium:
 
 ```bash
 pwsh RazorBlazorDataExchange.E2ETests/bin/Release/net8.0/playwright.ps1 install chromium
@@ -385,9 +451,9 @@ RBDX_BASE_URL=http://127.0.0.1:5087 \
   dotnet run --project RazorBlazorDataExchange.E2ETests -c Release --no-build
 ```
 
-The GitHub Actions workflow performs build, stress tests, Chromium installation, tester startup and browser E2E validation automatically.
+The GitHub Actions workflow performs solution build, broker stress tests, 0.6 ordering/transport tests, Chromium installation, tester startup and browser E2E validation automatically.
 
-## Validated 0.5 communication matrix
+## Validated communication matrix
 
 | Publisher | Receiver | Same circuit | Different circuit, same session | Different session |
 |---|---|---:|---:|---:|
@@ -401,18 +467,20 @@ The different-circuit cases are validated using two browser tabs that share the 
 
 ## Scope and scaling
 
-Version 0.5 is an **in-process broker**. The singleton lifetime is per ASP.NET Core process.
+The application broker is still **in-process**. The singleton lifetime is per ASP.NET Core process.
 
-In a multi-node deployment, each server process has its own broker instance. A future distributed transport can be introduced behind the same exchange semantics if cross-node publication is required.
+Version 0.6 provides a transport SPI and serialization-safe envelope so a later version can add cross-node publication without forcing application code to depend directly on Redis, Service Bus or another transport. Automatic distributed replication is intentionally not enabled until conflict, deduplication and delivery semantics are explicitly defined.
 
 ## Use cases
 
-- Incremental migration from Razor Pages/MVC to Blazor
-- Embedding interactive Blazor Server islands into existing Razor applications
-- Synchronizing state between Razor requests and live Blazor circuits
-- Coordinating multiple Blazor components hosted by one Razor page
-- Coordinating components in multiple circuits/tabs belonging to the same exchange session
-- Preserving a traditional Razor/MVC application while progressively replacing individual UI areas with Blazor
+- incremental migration from Razor Pages/MVC to Blazor;
+- embedding interactive Blazor Server islands into existing Razor applications;
+- synchronizing state between Razor requests and live Blazor circuits;
+- coordinating multiple Blazor components hosted by one Razor page;
+- coordinating components in multiple circuits/tabs belonging to the same exchange session;
+- deterministic completion ordering for selected session/property workflows;
+- preparing the same application-facing broker model for a future distributed transport;
+- preserving a traditional Razor/MVC application while progressively replacing individual UI areas with Blazor.
 
 ## License
 
