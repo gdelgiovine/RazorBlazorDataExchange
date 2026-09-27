@@ -1,12 +1,15 @@
-﻿namespace WebNetProBlazorComponents.Components
-
+namespace WebNetProBlazorComponents.Components
 {
+    /// <summary>
+    /// Legacy compatibility error notification service.
+    /// </summary>
     public class ErrorHandlingService
     {
-        public event System.Action<System.Exception> OnError;
+        public event Action<Exception>? OnError;
 
-        public void HandleError(System.Exception ex)
+        public void HandleError(Exception ex)
         {
+            ArgumentNullException.ThrowIfNull(ex);
             OnError?.Invoke(ex);
         }
     }

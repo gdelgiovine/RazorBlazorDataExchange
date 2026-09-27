@@ -1,13 +1,18 @@
-﻿namespace WebNetProBlazorComponents.Components
+namespace WebNetProBlazorComponents.Components
 {
+    /// <summary>
+    /// Legacy compatibility interface retained to avoid breaking existing consumers.
+    /// </summary>
     public interface IHandlePropertyChange
     {
         void NotifyPropertyChanged(string propertyName);
     }
 
-        public interface IRefreshableComponent
-        {
-            void Refresh();
-        }
-
+    /// <summary>
+    /// Legacy compatibility interface retained to avoid breaking existing consumers.
+    /// </summary>
+    public interface IRefreshableComponent
+    {
+        void Refresh();
+    }
 }

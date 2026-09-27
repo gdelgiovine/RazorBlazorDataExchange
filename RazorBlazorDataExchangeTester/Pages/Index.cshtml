@@ -1,89 +1,87 @@
-﻿@page
-
-
-@* Il taghelper può essere dichiarato nella pagina Razor o in maniera globale in _ViewImports.cshtml *@
-@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers  
-@using Microsoft.Extensions.DependencyInjection
-@using System.ComponentModel
-@using Microsoft.JSInterop
+@page
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
 @using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Web
-
-
 @inject RazorBlazorDataExchange DataExchange
-@inject IJSRuntime JS
+@model RazorBlazorDataExchangeTester.Pages.IndexModel
 
-@model IndexModel
 @{
     ViewData["Title"] = "Home page";
 }
 
-<div class="text-center">
+<div class="text-center" data-testid="razor-host">
     <form id="antiForgeryForm">
         @Html.AntiForgeryToken()
     </form>
 
-    <div class="text-center">
-        <h1 class="display-4">Welcome to Razor <-> Blazor Interop Demo</-></h1>
-        <p>DataExchange Service Instance HashCode in Razor Page: @DataExchange.GetHashCode()</p>
-        <p>DataExchange SessionId: @Model.SessionId</p>
-        
-        <div class="counter-container mb-4">
-            <!-- Aggiungi questo elemento nascosto alla pagina -->
-            <input type="hidden" id="counter-signal" value="@Model.XCounter" />
-            <p>Counter value in Razor: <span id="counter-value">@Model.XCounter</span></p>
-            <button id="increment-btn" class="btn btn-success" onclick="incrementCounter()">Increase from Razor</button>
-            
+    <h1 class="display-4">Razor &lt;-&gt; Blazor Interop Demo</h1>
+    <p>DataExchange Service Instance HashCode in Razor Page: <span data-testid="razor-broker-hash">@DataExchange.GetHashCode()</span></p>
+    <p>DataExchange SessionId: <span data-testid="razor-session-id">@Model.SessionId</span></p>
+
+    <div class="counter-container mb-4 card">
+        <div class="card-body">
+            <h5 class="card-title">Razor host</h5>
+            <p class="lead">Counter value in Razor DOM: <span id="counter-value" data-testid="razor-counter-value">@Model.XCounter</span></p>
+            <p>Last live update source: <span id="last-update-source" data-testid="last-update-source">Razor initial render</span></p>
+            <button id="increment-btn"
+                    data-testid="increment-razor"
+                    type="button"
+                    class="btn btn-success"
+                    onclick="incrementCounter()">
+                Increase from Razor
+            </button>
         </div>
-
-        <component type="typeof(BlazorComponents.CounterComponent )"
-                   render-mode="Server"
-                   param-RazorBlazorDataExchangeSessionId=@(Model.SessionId)
-                   param-ComponentId=@("CounterComponent1")
-                   param-initialCount=@(5)
-                   param-buttonText=@("Increase from Blazor Component inside Razor Page")
-                   param-counterText=@("Current value in Blazor Component:")
-                   param-XCounter=@Model.XCounter
-                   param-JsMessageHandler=@("handleBlazorEvent") /> 
-
-       
-        @* <component type="typeof(RazorBlazorDataExchangeTester.TestComponentX)" render-mode="Server" /> *@
-
-        
     </div>
 
-
-
-
-
-
-
+    <div class="row text-start">
+        <div class="col-md-6">
+            <component type="typeof(BlazorComponents.CounterComponent)"
+                       render-mode="Server"
+                       param-RazorBlazorDataExchangeSessionId="@(Model.SessionId)"
+                       param-ComponentId="@("CounterComponent1")"
+                       param-buttonText="@("Increase from Blazor Component 1")"
+                       param-counterText="@("Current value in Blazor Component 1:")"
+                       param-XCounter="@Model.XCounter"
+                       param-JsMessageHandler="@("handleBlazorEvent")" />
+        </div>
+        <div class="col-md-6">
+            <component type="typeof(BlazorComponents.CounterComponent)"
+                       render-mode="Server"
+                       param-RazorBlazorDataExchangeSessionId="@(Model.SessionId)"
+                       param-ComponentId="@("CounterComponent2")"
+                       param-buttonText="@("Increase from Blazor Component 2")"
+                       param-counterText="@("Current value in Blazor Component 2:")"
+                       param-XCounter="@Model.XCounter"
+                       param-JsMessageHandler="@("handleBlazorEvent")" />
+        </div>
+    </div>
 </div>
 
 @section Scripts {
     <script>
-        function handleBlazorEvent(message, value) {
-            console.log(message);
+        function handleBlazorEvent(source, value) {
             document.getElementById('counter-value').innerText = value;
+            document.getElementById('last-update-source').innerText = source || 'Blazor';
         }
 
-       
-
-        // Funzioni per gestire il contatore in tempo reale
-        function incrementCounter() {
-            fetch('/Index?handler=IncrementCounter', {
+        async function incrementCounter() {
+            const token = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]').value;
+            const response = await fetch('/Index?handler=IncrementCounter', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'RequestVerificationToken': document.querySelector('input[name="__RequestVerificationToken"]').value
+                    'RequestVerificationToken': token
                 }
-            })
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('counter-value').innerText = data.value;
             });
+
+            if (!response.ok) {
+                console.error('Razor counter update failed.', response.status, response.statusText);
+                return;
+            }
+
+            const data = await response.json();
+            document.getElementById('counter-value').innerText = data.value;
+            document.getElementById('last-update-source').innerText = 'Razor:/Index';
         }
-
-
     </script>
 }

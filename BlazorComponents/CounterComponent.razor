@@ -1,120 +1,143 @@
-﻿@using System.ComponentModel
-@using Microsoft.AspNetCore.Http
-@* @using Microsoft.AspNetCore.Components.Forms *@
-@using Microsoft.JSInterop;
-@* @inject IHttpContextAccessor HttpContextAccessor *@
-@* @using Radzen.Blazor *@
-@inject RazorBlazorDataExchange DataExchange 
-@* @inject RazorBlazorDataExchangeProvider Provider *@
+@using Microsoft.AspNetCore.Components
+@using Microsoft.JSInterop
+@implements IDisposable
+@inject RazorBlazorDataExchange DataExchange
 @inject IJSRuntime JS
-<p>DataExchange Service Instance HashCode in Blazor Component: @DataExchange.GetHashCode()</p>
-<p>DataExchange SessionId in Blazor Component: @RazorBlazorDataExchangeSessionId</p>
-<p>DataExchange Blazor Component ComponentId: @ComponentId</p>
-<p>@counterText @XCounter</p>
-@* <RadzenButton Text="@buttonText" Click="IncrementCount" /> *@
-<button class="btn btn-primary" onclick="@IncrementCount">@buttonText</button>
 
+<div class="blazor-counter card mb-3"
+     data-testid="blazor-counter"
+     data-component-id="@ComponentId"
+     data-instance-id="@_instanceId"
+     data-actor-id="@_actorId">
+    <div class="card-body">
+        <h5 class="card-title">Blazor component @ComponentId</h5>
+        <p class="mb-1">DataExchange Service Instance HashCode: <span data-testid="broker-hash">@DataExchange.GetHashCode()</span></p>
+        <p class="mb-1">SessionId: <span data-testid="session-id">@RazorBlazorDataExchangeSessionId</span></p>
+        <p class="mb-1">Component instance: <span data-testid="instance-id">@_instanceId</span></p>
+        <p class="mb-2">ActorId: <span data-testid="actor-id">@_actorId</span></p>
+        <p class="lead mb-3">@counterText <span data-testid="counter-value">@XCounter</span></p>
+        <button type="button"
+                class="btn btn-primary"
+                data-testid="increment-blazor"
+                @onclick="IncrementCount">
+            @buttonText
+        </button>
+    </div>
+</div>
 
 @namespace BlazorComponents
+
 @code {
+    private const string CounterProperty = "XCounter";
 
+    [Parameter, EditorRequired]
+    public string RazorBlazorDataExchangeSessionId { get; set; } = string.Empty;
 
-    [Parameter ]
-    public string RazorBlazorDataExchangeSessionId { get; set; } = "GLOBAL";
+    /// <summary>
+    /// Logical component identifier supplied by the host. It does not identify a concrete
+    /// Blazor component instance because the same logical component can exist in multiple circuits.
+    /// </summary>
     [Parameter]
-    public string ComponentId { get; set; }
+    public string? ComponentId { get; set; }
+
     [Parameter]
-    public int initialCount { get; set; } = 0;
+    public int initialCount { get; set; }
+
     [Parameter]
-    public int XCounter { get; set; } = 0;
+    public int XCounter { get; set; }
+
     [Parameter]
-    public string buttonText { get; set; } = "Click me"; 
+    public string buttonText { get; set; } = "Click me";
+
     [Parameter]
     public string counterText { get; set; } = "Current count:";
 
     [Parameter]
     public string JsMessageHandler { get; set; } = "handleBlazorEvent";
 
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
+    private IDisposable? _subscription;
+    private string? _boundSessionId;
+    private string _actorId = string.Empty;
+    private int _currentCount;
 
-    private string Setter = nameof(BlazorComponents.CounterComponent); 
-    private int currentCount = 0;
-
-    public async Task  IncrementCount()
+    protected override void OnParametersSet()
     {
+        ComponentId ??= Guid.NewGuid().ToString("N");
 
-        currentCount++;
-        XCounter = currentCount;
-        // Esistono due possibili canali di notifica per il cambio di stato
+        // ComponentId is intentionally only a logical host id. ActorId must identify the
+        // concrete component instance, otherwise equal ComponentIds in separate SignalR
+        // circuits would incorrectly suppress each other's notifications as self-publishes.
+        var actorId = $"Blazor:{nameof(CounterComponent)}:{ComponentId}:{_instanceId}";
 
-
-        // Notifica tramite evento OnDataChanged  
-        // Questo tipo di notifica usa INotifyPropertyChanged   
-        // deve essere quindi definito un evento OnDataChanged nel CS che istanzia DataExchange
-        // Funziona sia per le pagine Razor che per i componenti Blazor
-        DataExchange.NotifyDataChange(RazorBlazorDataExchangeSessionId, "XCounter", currentCount, this.Setter );
-
-        // Notifica tramite JSInterop   
-        // Questo tipo di notifica usa JSInterop e quindi un metodo JS esistente nella pagina Razor 
-        // che ospita il componente Blazor
-        // Funziona solo verso le pagine Razor     
-        string message = $"Il contatore è stato incrementato a {currentCount}";
-        string value = System.Text.Json.JsonSerializer.Serialize(XCounter );
-        await InvokeRazorPageJS(JsMessageHandler, "", value);
-    }
-
-
-   
-
-    protected override void OnInitialized()
-    {
-      
-        //sottoscrizione dell'evento per essere avvisato di cambiamenti di stato
-        //avvenuti dentro la pagina Razor che ospita il componente Blazor   
-        if (this.ComponentId == null)
-            this.ComponentId = Guid.NewGuid().ToString();
-
-        DataExchange.DataChangeWithActor += OnDataChanged;
-    }
-
-    private void OnDataChanged(object sender, DataChangeWithActorEventArgs e)
-    {
-        //Controllo per evitare di gestire l'evento se la sessione è diversa
-        // if (!DataExchange.SameSession (e.SessionId, this.RazorBlazorDataExchangeSessionId))
-        //     return;
-        // //Controllo per evitare di gestire l'evento se il setter è lo stesso contesto
-        // if (DataExchange.SameSetter(e.Setter, this.Setter))
-        //     return;
-        // if (e.IsProcessingNotification)
-        //     return;
-
-        if (!DataExchange.ShouldProcessEvent(this.RazorBlazorDataExchangeSessionId, this.Setter, e))
-            return;
-
-        // verifico cosa è stato cambiato
-        // e mette a disposizione le seguenti proprietà 
-        // e.PropertyName
-        // e.Value
-        // e.Setter
-        // e.Getter 
-        // e.Type
-
-        if (e.PropertyName == "XCounter")
+        if (string.Equals(_boundSessionId, RazorBlazorDataExchangeSessionId, StringComparison.Ordinal) &&
+            string.Equals(_actorId, actorId, StringComparison.Ordinal))
         {
-            XCounter = (int)e.Value; 
-            currentCount = XCounter;
-            InvokeAsync(StateHasChanged);
-            
+            return;
         }
+
+        _subscription?.Dispose();
+        _boundSessionId = RazorBlazorDataExchangeSessionId;
+        _actorId = actorId;
+
+        if (DataExchange.TryGet<int>(RazorBlazorDataExchangeSessionId, CounterProperty, out var existing))
+        {
+            _currentCount = existing;
+        }
+        else
+        {
+            _currentCount = XCounter != 0 ? XCounter : initialCount;
+            DataExchange.StoreValue(
+                RazorBlazorDataExchangeSessionId,
+                CounterProperty,
+                _currentCount,
+                _actorId);
+        }
+
+        XCounter = _currentCount;
+
+        _subscription = DataExchange.Subscribe<int>(
+            RazorBlazorDataExchangeSessionId,
+            CounterProperty,
+            _actorId,
+            OnCounterChangedAsync);
     }
 
-    private async Task InvokeRazorPageJS(string ScriptName, string message, string value)
+    private async Task IncrementCount()
     {
-        
-        await JS.InvokeVoidAsync(ScriptName,message,value);
+        var message = await DataExchange.UpdateAsync<int>(
+            RazorBlazorDataExchangeSessionId,
+            CounterProperty,
+            current => current + 1,
+            _actorId);
+
+        if (message is not null)
+        {
+            _currentCount = message.Value;
+            XCounter = _currentCount;
+        }
+
+        // The broker carries the Blazor -> Razor state transition server-side.
+        // The Razor Page instance that rendered this DOM is no longer live, therefore
+        // JS interop is the final live UI hop for the already-rendered Razor document.
+        await JS.InvokeVoidAsync(JsMessageHandler, _actorId, XCounter);
+    }
+
+    private async ValueTask OnCounterChangedAsync(
+        ExchangeMessage<int> message,
+        CancellationToken cancellationToken)
+    {
+        await InvokeAsync(() =>
+        {
+            _currentCount = message.Value;
+            XCounter = _currentCount;
+            StateHasChanged();
+        });
     }
 
     public void Dispose()
     {
-        DataExchange.DataChangeWithActor -= OnDataChanged;
+        _subscription?.Dispose();
+        _subscription = null;
     }
 }
