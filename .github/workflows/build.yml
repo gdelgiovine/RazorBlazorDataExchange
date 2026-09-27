@@ -31,6 +31,9 @@ jobs:
       - name: Run broker stress tests
         run: dotnet run --project RazorBlazorDataExchange.StressTests/RazorBlazorDataExchange.StressTests.csproj -c Release --no-build
 
+      - name: Run v0.6 ordering and transport tests
+        run: dotnet run --project RazorBlazorDataExchange.V06Tests/RazorBlazorDataExchange.V06Tests.csproj -c Release --no-build
+
       - name: Install Playwright Chromium
         run: pwsh RazorBlazorDataExchange.E2ETests/bin/Release/net8.0/playwright.ps1 install --with-deps chromium
 
