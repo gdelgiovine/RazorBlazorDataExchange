@@ -10,8 +10,10 @@ using System.Collections.Concurrent;
 public sealed class RazorBlazorOrderedDataExchange
 {
     private readonly RazorBlazorDataExchange _exchange;
+    private readonly ConcurrentDictionary<string, SessionOrderingCoordinator> _sessionCoordinators =
+        new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<OrderedExchangeKey, OrderedLane> _lanes = new();
-    private static readonly AsyncLocal<HashSet<OrderedExchangeKey>?> HeldLanes = new();
+    private static readonly AsyncLocal<HashSet<HeldOrderingToken>?> HeldOrdering = new();
 
     private long _enteredOperations;
     private long _completedOperations;
@@ -22,10 +24,10 @@ public sealed class RazorBlazorOrderedDataExchange
         => _exchange = exchange ?? throw new ArgumentNullException(nameof(exchange));
 
     /// <summary>
-    /// Publishes while preserving completion order inside the selected ordering lane.
+    /// Publishes while preserving completion order inside the selected ordering scope.
     /// SessionAndProperty allows unrelated properties to progress concurrently.
-    /// Session serializes all ordered publications in one session and is useful for
-    /// workflows that cascade across several properties.
+    /// Session is an exclusive writer for the whole session and therefore waits for all
+    /// active ordered property lanes in that session to finish before entering.
     /// </summary>
     public async ValueTask<ExchangeMessage<T>?> PublishAsync<T>(
         string sessionId,
@@ -36,10 +38,12 @@ public sealed class RazorBlazorOrderedDataExchange
         RazorBlazorExchangeOrderingScope orderingScope = RazorBlazorExchangeOrderingScope.SessionAndProperty,
         CancellationToken cancellationToken = default)
     {
-        var key = CreateKey(sessionId, propertyName, orderingScope);
+        ValidateAddress(sessionId, propertyName, orderingScope);
 
         return await ExecuteOrderedAsync(
-            key,
+            sessionId,
+            propertyName,
+            orderingScope,
             token => _exchange.PublishAsync(
                 sessionId,
                 propertyName,
@@ -52,7 +56,7 @@ public sealed class RazorBlazorOrderedDataExchange
 
     /// <summary>
     /// Performs an atomic read-modify-write and preserves completion order inside the
-    /// selected ordering lane.
+    /// selected ordering scope.
     /// </summary>
     public async ValueTask<ExchangeMessage<T>?> UpdateAsync<T>(
         string sessionId,
@@ -64,10 +68,12 @@ public sealed class RazorBlazorOrderedDataExchange
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(updater);
-        var key = CreateKey(sessionId, propertyName, orderingScope);
+        ValidateAddress(sessionId, propertyName, orderingScope);
 
         return await ExecuteOrderedAsync(
-            key,
+            sessionId,
+            propertyName,
+            orderingScope,
             token => _exchange.UpdateAsync(
                 sessionId,
                 propertyName,
@@ -81,49 +87,137 @@ public sealed class RazorBlazorOrderedDataExchange
     public RazorBlazorOrderedDataExchangeMetricsSnapshot GetMetrics()
         => new(
             ActiveLanes: _lanes.Count,
+            ActiveSessionCoordinators: _sessionCoordinators.Count,
             EnteredOperations: Interlocked.Read(ref _enteredOperations),
             CompletedOperations: Interlocked.Read(ref _completedOperations),
             CancelledOperations: Interlocked.Read(ref _cancelledOperations),
             ReentrantBypasses: Interlocked.Read(ref _reentrantBypasses));
 
     private async ValueTask<TResult> ExecuteOrderedAsync<TResult>(
-        OrderedExchangeKey key,
+        string sessionId,
+        string propertyName,
+        RazorBlazorExchangeOrderingScope orderingScope,
         Func<CancellationToken, ValueTask<TResult>> operation,
         CancellationToken cancellationToken)
     {
-        // A subscriber may publish again on the same route while the outer publication is
-        // still awaiting its subscribers. Re-acquiring the same lane would deadlock. Keep
-        // that causally nested operation inside the current lane instead.
-        if (IsHeld(key))
+        var reentrant = GetReentrantDecision(sessionId, propertyName, orderingScope);
+        if (reentrant == ReentrantDecision.Bypass)
         {
             Interlocked.Increment(ref _reentrantBypasses);
             return await operation(cancellationToken).ConfigureAwait(false);
         }
 
-        OrderedLaneLease lease;
+        if (reentrant == ReentrantDecision.InvalidEscalation)
+        {
+            throw new InvalidOperationException(
+                "An ordered SessionAndProperty notification cannot re-enter the ordered facade " +
+                "with Session scope for the same session. Start the outer workflow with Session " +
+                "scope when cross-property/session-wide ordering is required.");
+        }
+
+        if (reentrant == ReentrantDecision.InvalidCrossProperty)
+        {
+            throw new InvalidOperationException(
+                "A SessionAndProperty subscriber cannot synchronously enter another ordered property " +
+                "in the same session. Use Session scope for workflows that cascade across properties.");
+        }
+
+        using var coordinatorReference = AcquireSessionCoordinator(sessionId);
+
         try
         {
-            lease = await EnterLaneAsync(key, cancellationToken).ConfigureAwait(false);
+            if (orderingScope == RazorBlazorExchangeOrderingScope.Session)
+            {
+                await using var writer = await coordinatorReference.Coordinator
+                    .EnterWriterAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                using var held = EnterHeldScope(new HeldOrderingToken(
+                    sessionId,
+                    null,
+                    RazorBlazorExchangeOrderingScope.Session));
+
+                return await ExecuteInsideLaneAsync(operation, cancellationToken).ConfigureAwait(false);
+            }
+
+            await using var reader = await coordinatorReference.Coordinator
+                .EnterReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            var key = new OrderedExchangeKey(sessionId, propertyName);
+            await using var lane = await EnterLaneAsync(key, cancellationToken).ConfigureAwait(false);
+            using var propertyHeld = EnterHeldScope(new HeldOrderingToken(
+                sessionId,
+                propertyName,
+                RazorBlazorExchangeOrderingScope.SessionAndProperty));
+
+            return await ExecuteInsideLaneAsync(operation, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             Interlocked.Increment(ref _cancelledOperations);
             throw;
         }
+    }
 
-        await using (lease.ConfigureAwait(false))
-        using (EnterHeldScope(key))
+    private async ValueTask<TResult> ExecuteInsideLaneAsync<TResult>(
+        Func<CancellationToken, ValueTask<TResult>> operation,
+        CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _enteredOperations);
+        try
         {
-            Interlocked.Increment(ref _enteredOperations);
-            try
+            return await operation(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Increment(ref _completedOperations);
+        }
+    }
+
+    private SessionCoordinatorReference AcquireSessionCoordinator(string sessionId)
+    {
+        while (true)
+        {
+            var coordinator = _sessionCoordinators.GetOrAdd(
+                sessionId,
+                static _ => new SessionOrderingCoordinator());
+
+            lock (coordinator.LifecycleSync)
             {
-                return await operation(cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                Interlocked.Increment(ref _completedOperations);
+                if (coordinator.Retired ||
+                    !_sessionCoordinators.TryGetValue(sessionId, out var registered) ||
+                    !ReferenceEquals(coordinator, registered))
+                {
+                    continue;
+                }
+
+                coordinator.ReferenceCount++;
+                return new SessionCoordinatorReference(this, sessionId, coordinator);
             }
         }
+    }
+
+    private void ReleaseSessionCoordinator(
+        string sessionId,
+        SessionOrderingCoordinator coordinator)
+    {
+        var retire = false;
+        lock (coordinator.LifecycleSync)
+        {
+            coordinator.ReferenceCount--;
+            if (coordinator.ReferenceCount == 0)
+            {
+                coordinator.Retired = true;
+                retire = true;
+            }
+        }
+
+        if (!retire)
+            return;
+
+        var collection =
+            (ICollection<KeyValuePair<string, SessionOrderingCoordinator>>)_sessionCoordinators;
+        collection.Remove(new KeyValuePair<string, SessionOrderingCoordinator>(sessionId, coordinator));
     }
 
     private async ValueTask<OrderedLaneLease> EnterLaneAsync(
@@ -153,16 +247,16 @@ public sealed class RazorBlazorOrderedDataExchange
             }
             catch
             {
-                ReleaseReference(key, lane, releaseSemaphore: false);
+                ReleaseLaneReference(key, lane, releaseSemaphore: false);
                 throw;
             }
         }
     }
 
     private void ReleaseLane(OrderedExchangeKey key, OrderedLane lane)
-        => ReleaseReference(key, lane, releaseSemaphore: true);
+        => ReleaseLaneReference(key, lane, releaseSemaphore: true);
 
-    private void ReleaseReference(
+    private void ReleaseLaneReference(
         OrderedExchangeKey key,
         OrderedLane lane,
         bool releaseSemaphore)
@@ -188,7 +282,53 @@ public sealed class RazorBlazorOrderedDataExchange
         collection.Remove(new KeyValuePair<OrderedExchangeKey, OrderedLane>(key, lane));
     }
 
-    private static OrderedExchangeKey CreateKey(
+    private static ReentrantDecision GetReentrantDecision(
+        string sessionId,
+        string propertyName,
+        RazorBlazorExchangeOrderingScope requestedScope)
+    {
+        var held = HeldOrdering.Value;
+        if (held is null || held.Count == 0)
+            return ReentrantDecision.None;
+
+        var sameSession = held
+            .Where(token => string.Equals(token.SessionId, sessionId, StringComparison.Ordinal))
+            .ToArray();
+
+        if (sameSession.Length == 0)
+            return ReentrantDecision.None;
+
+        if (sameSession.Any(token => token.Scope == RazorBlazorExchangeOrderingScope.Session))
+            return ReentrantDecision.Bypass;
+
+        if (requestedScope == RazorBlazorExchangeOrderingScope.Session)
+            return ReentrantDecision.InvalidEscalation;
+
+        if (sameSession.Any(token =>
+            string.Equals(token.PropertyName, propertyName, StringComparison.Ordinal)))
+        {
+            return ReentrantDecision.Bypass;
+        }
+
+        return ReentrantDecision.InvalidCrossProperty;
+    }
+
+    private static IDisposable EnterHeldScope(HeldOrderingToken token)
+    {
+        // AsyncLocal values flow into child async operations. Never mutate an inherited
+        // HashSet instance because sibling subscriber flows would otherwise see each other's
+        // ordering changes. Clone on entry and restore the previous snapshot on exit.
+        var previous = HeldOrdering.Value;
+        var current = previous is null
+            ? new HashSet<HeldOrderingToken>()
+            : new HashSet<HeldOrderingToken>(previous);
+
+        current.Add(token);
+        HeldOrdering.Value = current;
+        return new HeldScope(previous);
+    }
+
+    private static void ValidateAddress(
         string sessionId,
         string propertyName,
         RazorBlazorExchangeOrderingScope orderingScope)
@@ -197,34 +337,24 @@ public sealed class RazorBlazorOrderedDataExchange
             throw new ArgumentException("SessionId cannot be empty.", nameof(sessionId));
         if (string.IsNullOrWhiteSpace(propertyName))
             throw new ArgumentException("Property name cannot be empty.", nameof(propertyName));
-
-        return orderingScope switch
-        {
-            RazorBlazorExchangeOrderingScope.SessionAndProperty => new(sessionId, propertyName),
-            RazorBlazorExchangeOrderingScope.Session => new(sessionId, null),
-            _ => throw new ArgumentOutOfRangeException(nameof(orderingScope))
-        };
+        if (!Enum.IsDefined(orderingScope))
+            throw new ArgumentOutOfRangeException(nameof(orderingScope));
     }
 
-    private static bool IsHeld(OrderedExchangeKey key)
-        => HeldLanes.Value?.Contains(key) == true;
+    private readonly record struct OrderedExchangeKey(string SessionId, string PropertyName);
 
-    private static IDisposable EnterHeldScope(OrderedExchangeKey key)
+    private readonly record struct HeldOrderingToken(
+        string SessionId,
+        string? PropertyName,
+        RazorBlazorExchangeOrderingScope Scope);
+
+    private enum ReentrantDecision
     {
-        // AsyncLocal values flow into child async operations. Never mutate an inherited
-        // HashSet instance because sibling subscriber flows would otherwise see each other's
-        // lane changes. Clone on entry and restore the previous snapshot on exit.
-        var previous = HeldLanes.Value;
-        var current = previous is null
-            ? new HashSet<OrderedExchangeKey>()
-            : new HashSet<OrderedExchangeKey>(previous);
-
-        current.Add(key);
-        HeldLanes.Value = current;
-        return new HeldScope(previous);
+        None,
+        Bypass,
+        InvalidEscalation,
+        InvalidCrossProperty
     }
-
-    private readonly record struct OrderedExchangeKey(string SessionId, string? PropertyName);
 
     private sealed class OrderedLane
     {
@@ -232,6 +362,137 @@ public sealed class RazorBlazorOrderedDataExchange
         public SemaphoreSlim Gate { get; } = new(1, 1);
         public int ReferenceCount { get; set; }
         public bool Retired { get; set; }
+    }
+
+    /// <summary>
+    /// Writer-preferred async reader/writer coordinator.
+    /// Property lanes enter as readers. Session-wide ordering enters as a writer.
+    /// </summary>
+    private sealed class SessionOrderingCoordinator
+    {
+        private readonly SemaphoreSlim _turnstile = new(1, 1);
+        private readonly SemaphoreSlim _roomEmpty = new(1, 1);
+        private readonly SemaphoreSlim _readerMutex = new(1, 1);
+        private int _readerCount;
+
+        public object LifecycleSync { get; } = new();
+        public int ReferenceCount { get; set; }
+        public bool Retired { get; set; }
+
+        public async ValueTask<ReaderLease> EnterReaderAsync(CancellationToken cancellationToken)
+        {
+            await _turnstile.WaitAsync(cancellationToken).ConfigureAwait(false);
+            _turnstile.Release();
+
+            await _readerMutex.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var firstReader = false;
+            try
+            {
+                _readerCount++;
+                firstReader = _readerCount == 1;
+                if (firstReader)
+                    await _roomEmpty.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (firstReader)
+                    _readerCount--;
+                throw;
+            }
+            finally
+            {
+                _readerMutex.Release();
+            }
+
+            return new ReaderLease(this);
+        }
+
+        public async ValueTask<WriterLease> EnterWriterAsync(CancellationToken cancellationToken)
+        {
+            await _turnstile.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _roomEmpty.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return new WriterLease(this);
+            }
+            catch
+            {
+                _turnstile.Release();
+                throw;
+            }
+        }
+
+        private async ValueTask ReleaseReaderAsync()
+        {
+            await _readerMutex.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                _readerCount--;
+                if (_readerCount == 0)
+                    _roomEmpty.Release();
+            }
+            finally
+            {
+                _readerMutex.Release();
+            }
+        }
+
+        private void ReleaseWriter()
+        {
+            _roomEmpty.Release();
+            _turnstile.Release();
+        }
+
+        public sealed class ReaderLease : IAsyncDisposable
+        {
+            private SessionOrderingCoordinator? _owner;
+
+            public ReaderLease(SessionOrderingCoordinator owner)
+                => _owner = owner;
+
+            public async ValueTask DisposeAsync()
+            {
+                var owner = Interlocked.Exchange(ref _owner, null);
+                if (owner is not null)
+                    await owner.ReleaseReaderAsync().ConfigureAwait(false);
+            }
+        }
+
+        public sealed class WriterLease : IAsyncDisposable
+        {
+            private SessionOrderingCoordinator? _owner;
+
+            public WriterLease(SessionOrderingCoordinator owner)
+                => _owner = owner;
+
+            public ValueTask DisposeAsync()
+            {
+                Interlocked.Exchange(ref _owner, null)?.ReleaseWriter();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
+    private sealed class SessionCoordinatorReference : IDisposable
+    {
+        private RazorBlazorOrderedDataExchange? _owner;
+        private readonly string _sessionId;
+
+        public SessionCoordinatorReference(
+            RazorBlazorOrderedDataExchange owner,
+            string sessionId,
+            SessionOrderingCoordinator coordinator)
+        {
+            _owner = owner;
+            _sessionId = sessionId;
+            Coordinator = coordinator;
+        }
+
+        public SessionOrderingCoordinator Coordinator { get; }
+
+        public void Dispose()
+            => Interlocked.Exchange(ref _owner, null)?
+                .ReleaseSessionCoordinator(_sessionId, Coordinator);
     }
 
     private sealed class OrderedLaneLease : IAsyncDisposable
@@ -259,10 +520,10 @@ public sealed class RazorBlazorOrderedDataExchange
 
     private sealed class HeldScope : IDisposable
     {
-        private readonly HashSet<OrderedExchangeKey>? _previous;
+        private readonly HashSet<HeldOrderingToken>? _previous;
         private int _disposed;
 
-        public HeldScope(HashSet<OrderedExchangeKey>? previous)
+        public HeldScope(HashSet<HeldOrderingToken>? previous)
             => _previous = previous;
 
         public void Dispose()
@@ -270,7 +531,7 @@ public sealed class RazorBlazorOrderedDataExchange
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
-            HeldLanes.Value = _previous;
+            HeldOrdering.Value = _previous;
         }
     }
 }
@@ -286,6 +547,7 @@ public enum RazorBlazorExchangeOrderingScope
 
 public sealed record RazorBlazorOrderedDataExchangeMetricsSnapshot(
     int ActiveLanes,
+    int ActiveSessionCoordinators,
     long EnteredOperations,
     long CompletedOperations,
     long CancelledOperations,
