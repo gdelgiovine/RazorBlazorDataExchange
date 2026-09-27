@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Hosting;
 
 public static class RazorBlazorDataExchangeServiceCollectionExtensions
 {
@@ -24,11 +23,11 @@ public static class RazorBlazorDataExchangeServiceCollectionExtensions
         services.TryAddSingleton<RazorBlazorCircuitHandler>();
         services.TryAddScoped<RazorBlazorDataExchangeProvider>();
 
-        services.TryAddEnumerable(
-            ServiceDescriptor.Singleton<CircuitHandler>(sp => sp.GetRequiredService<RazorBlazorCircuitHandler>()));
+        // Blazor resolves CircuitHandler, while application code may resolve the concrete
+        // registry. Both references point at the same singleton instance.
+        services.AddSingleton<CircuitHandler>(sp => sp.GetRequiredService<RazorBlazorCircuitHandler>());
 
-        services.TryAddEnumerable(
-            ServiceDescriptor.Singleton<IHostedService, RazorBlazorDataExchangeCleanupService>());
+        services.AddHostedService<RazorBlazorDataExchangeCleanupService>();
 
         return services;
     }
