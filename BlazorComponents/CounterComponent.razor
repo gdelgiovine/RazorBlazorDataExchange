@@ -7,11 +7,13 @@
 <div class="blazor-counter card mb-3"
      data-testid="blazor-counter"
      data-component-id="@ComponentId"
+     data-instance-id="@_instanceId"
      data-actor-id="@_actorId">
     <div class="card-body">
         <h5 class="card-title">Blazor component @ComponentId</h5>
         <p class="mb-1">DataExchange Service Instance HashCode: <span data-testid="broker-hash">@DataExchange.GetHashCode()</span></p>
         <p class="mb-1">SessionId: <span data-testid="session-id">@RazorBlazorDataExchangeSessionId</span></p>
+        <p class="mb-1">Component instance: <span data-testid="instance-id">@_instanceId</span></p>
         <p class="mb-2">ActorId: <span data-testid="actor-id">@_actorId</span></p>
         <p class="lead mb-3">@counterText <span data-testid="counter-value">@XCounter</span></p>
         <button type="button"
@@ -31,6 +33,10 @@
     [Parameter, EditorRequired]
     public string RazorBlazorDataExchangeSessionId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Logical component identifier supplied by the host. It does not identify a concrete
+    /// Blazor component instance because the same logical component can exist in multiple circuits.
+    /// </summary>
     [Parameter]
     public string? ComponentId { get; set; }
 
@@ -49,6 +55,7 @@
     [Parameter]
     public string JsMessageHandler { get; set; } = "handleBlazorEvent";
 
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
     private IDisposable? _subscription;
     private string? _boundSessionId;
     private string _actorId = string.Empty;
@@ -57,7 +64,11 @@
     protected override void OnParametersSet()
     {
         ComponentId ??= Guid.NewGuid().ToString("N");
-        var actorId = $"Blazor:{nameof(CounterComponent)}:{ComponentId}";
+
+        // ComponentId is intentionally only a logical host id. ActorId must identify the
+        // concrete component instance, otherwise equal ComponentIds in separate SignalR
+        // circuits would incorrectly suppress each other's notifications as self-publishes.
+        var actorId = $"Blazor:{nameof(CounterComponent)}:{ComponentId}:{_instanceId}";
 
         if (string.Equals(_boundSessionId, RazorBlazorDataExchangeSessionId, StringComparison.Ordinal) &&
             string.Equals(_actorId, actorId, StringComparison.Ordinal))
