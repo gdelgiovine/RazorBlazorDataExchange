@@ -1,4 +1,4 @@
-name: Build and stress test
+name: Build, stress and browser E2E
 
 on:
   push:
@@ -30,3 +30,47 @@ jobs:
 
       - name: Run broker stress tests
         run: dotnet run --project RazorBlazorDataExchange.StressTests/RazorBlazorDataExchange.StressTests.csproj -c Release --no-build
+
+      - name: Install Playwright Chromium
+        run: pwsh RazorBlazorDataExchange.E2ETests/bin/Release/net8.0/playwright.ps1 install --with-deps chromium
+
+      - name: Start Razor/Blazor tester
+        shell: bash
+        run: |
+          ASPNETCORE_URLS=http://127.0.0.1:5087 \
+          ASPNETCORE_ENVIRONMENT=Development \
+          dotnet run \
+            --project RazorBlazorDataExchangeTester/RazorBlazorDataExchangeTester.csproj \
+            -c Release \
+            --no-build \
+            --no-launch-profile \
+            > tester.log 2>&1 &
+          echo $! > tester.pid
+
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:5087/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Tester did not become ready."
+          cat tester.log
+          exit 1
+
+      - name: Run Razor-Blazor browser E2E tests
+        env:
+          RBDX_BASE_URL: http://127.0.0.1:5087
+        run: dotnet run --project RazorBlazorDataExchange.E2ETests/RazorBlazorDataExchange.E2ETests.csproj -c Release --no-build
+
+      - name: Show tester log
+        if: always()
+        run: cat tester.log || true
+
+      - name: Stop Razor/Blazor tester
+        if: always()
+        shell: bash
+        run: |
+          if [ -f tester.pid ]; then
+            kill "$(cat tester.pid)" || true
+          fi
