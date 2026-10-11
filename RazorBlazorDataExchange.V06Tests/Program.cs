@@ -7,6 +7,7 @@ internal static class Program
         Console.WriteLine("RazorBlazorDataExchange 0.6 tests");
 
         TestFirstClassDataChangedEventSymmetry();
+        RazorPageModelEventTests.Run();
         await TestOrderedSameRouteCompletion();
         await TestIndependentPropertyLanes();
         await TestSessionWideOrdering();
