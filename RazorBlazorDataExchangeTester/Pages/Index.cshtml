@@ -23,6 +23,17 @@
             <h5 class="card-title">Razor host</h5>
             <p class="lead">Counter value in Razor DOM: <span id="counter-value" data-testid="razor-counter-value">@Model.XCounter</span></p>
             <p>Last live DOM update source: <span id="last-update-source" data-testid="last-update-source">Razor initial render</span></p>
+            <div class="form-check d-inline-flex align-items-center gap-2 mb-3">
+                <input type="checkbox"
+                       class="form-check-input"
+                       id="js-dom-bridge-checkbox"
+                       data-testid="js-dom-bridge-checkbox"
+                       checked="@Model.JsBridgeEnabled"
+                       onchange="setJsDomBridgeEnabled(this)" />
+                <label class="form-check-label" for="js-dom-bridge-checkbox">
+                    Use JavaScript bridge to update the Razor counter from Blazor
+                </label>
+            </div>
             <hr />
             <p class="mb-1"><strong>Last Razor server-side DataChanged event</strong></p>
             <p class="mb-1">Actor: <span data-testid="razor-observed-change-actor">@Model.LastObservedChangeActor</span></p>
@@ -67,9 +78,78 @@
 
 @section Scripts {
     <script>
+        let lastObservedMessageId = null;
+        let observedChangeRequestInFlight = false;
+
+        // The browser only renders what the Razor server-side DataChanged observer recorded.
+        // This endpoint never manufactures an event or publishes a new value.
+        async function refreshObservedChange() {
+            if (observedChangeRequestInFlight)
+                return;
+
+            observedChangeRequestInFlight = true;
+            try {
+                const response = await fetch('/Index?handler=LastChange', { cache: 'no-store' });
+                if (!response.ok)
+                    return;
+
+                const change = await response.json();
+                if (!change.hasChange || change.messageId === lastObservedMessageId)
+                    return;
+
+                lastObservedMessageId = change.messageId;
+                document.querySelector('[data-testid="razor-observed-change-actor"]').textContent = change.actor;
+                document.querySelector('[data-testid="razor-observed-change-property"]').textContent = change.property;
+                document.querySelector('[data-testid="razor-observed-change-value"]').textContent = change.value;
+                document.querySelector('[data-testid="razor-observed-change-version"]').textContent = change.version;
+            }
+            catch (error) {
+                console.error('Unable to read Razor server-side DataChanged event.', error);
+            }
+            finally {
+                observedChangeRequestInFlight = false;
+            }
+        }
+
+        async function setJsDomBridgeEnabled(checkbox) {
+            const requestedValue = checkbox.checked;
+            checkbox.disabled = true;
+            try {
+                const token = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]').value;
+                const response = await fetch('/Index?handler=SetJsBridge', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'RequestVerificationToken': token
+                    },
+                    body: JSON.stringify({ enabled: requestedValue })
+                });
+
+                if (!response.ok)
+                    throw new Error('HTTP ' + response.status);
+
+                const result = await response.json();
+                checkbox.checked = result.enabled;
+                await refreshObservedChange();
+            }
+            catch (error) {
+                checkbox.checked = !requestedValue;
+                console.error('Unable to change JS DOM bridge setting.', error);
+            }
+            finally {
+                checkbox.disabled = false;
+            }
+        }
+
+        // Polling concerns only the last-event diagnostic labels. All actual
+        // Razor <-> Blazor change communication remains broker event-driven.
+        void refreshObservedChange();
+        const changeRefreshInterval = setInterval(refreshObservedChange, 400);
+
         function handleBlazorEvent(source, value) {
             document.getElementById('counter-value').innerText = value;
             document.getElementById('last-update-source').innerText = source || 'Blazor';
+            void refreshObservedChange();
         }
 
         async function incrementCounter() {
@@ -90,6 +170,7 @@
             const data = await response.json();
             document.getElementById('counter-value').innerText = data.value;
             document.getElementById('last-update-source').innerText = 'Razor:/Index';
+            void refreshObservedChange();
         }
     </script>
 }
