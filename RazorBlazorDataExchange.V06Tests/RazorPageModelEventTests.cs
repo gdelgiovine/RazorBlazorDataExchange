@@ -20,7 +20,8 @@ internal static class RazorPageModelEventTests
         });
         var accessor = new HttpContextAccessor { HttpContext = context };
 
-        var page = new IndexModel(exchange, accessor, observer);
+        using var domBridge = new RazorDomBridge();
+        var page = new IndexModel(exchange, accessor, observer, domBridge);
         var sessionId = page.SessionId;
         Assert(!string.IsNullOrWhiteSpace(sessionId), "Razor PageModel session was not initialized.");
 
