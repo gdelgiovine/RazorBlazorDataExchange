@@ -1,6 +1,28 @@
 using System.ComponentModel;
 
 /// <summary>
+/// First-class, technology-neutral change event raised for every committed single-property
+/// publication/update. Razor/MVC and Blazor can subscribe to the same event contract.
+/// </summary>
+public sealed class RazorBlazorDataChangedEventArgs : EventArgs
+{
+    public RazorBlazorDataChangedEventArgs(ExchangeMessage message)
+        => Message = message ?? throw new ArgumentNullException(nameof(message));
+
+    public ExchangeMessage Message { get; }
+
+    public string SessionId => Message.SessionId;
+    public string PropertyName => Message.PropertyName;
+    public object? Value => Message.Value;
+    public Type ValueType => Message.ValueType;
+    public string ActorId => Message.ActorId;
+    public Guid MessageId => Message.MessageId;
+    public Guid CorrelationId => Message.CorrelationId;
+    public long Version => Message.Version;
+    public DateTimeOffset Timestamp => Message.Timestamp;
+}
+
+/// <summary>
 /// Legacy single-property change notification. Kept for source compatibility with the original API.
 /// New code should prefer <see cref="ExchangeMessage{T}"/> subscriptions.
 /// </summary>

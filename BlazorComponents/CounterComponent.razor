@@ -55,8 +55,14 @@
     [Parameter]
     public string JsMessageHandler { get; set; } = "handleBlazorEvent";
 
+    /// <summary>
+    /// Optional browser-DOM bridge. Change-event communication remains active when this is false.
+    /// </summary>
+    [Parameter]
+    public bool EnableJsDomBridge { get; set; } = true;
+
     private readonly string _instanceId = Guid.NewGuid().ToString("N");
-    private IDisposable? _subscription;
+    private bool _changeEventSubscribed;
     private string? _boundSessionId;
     private string _actorId = string.Empty;
     private int _currentCount;
@@ -76,7 +82,6 @@
             return;
         }
 
-        _subscription?.Dispose();
         _boundSessionId = RazorBlazorDataExchangeSessionId;
         _actorId = actorId;
 
@@ -96,11 +101,11 @@
 
         XCounter = _currentCount;
 
-        _subscription = DataExchange.Subscribe<int>(
-            RazorBlazorDataExchangeSessionId,
-            CounterProperty,
-            _actorId,
-            OnCounterChangedAsync);
+        if (!_changeEventSubscribed)
+        {
+            DataExchange.DataChanged += OnDataChanged;
+            _changeEventSubscribed = true;
+        }
     }
 
     private async Task IncrementCount()
@@ -117,19 +122,29 @@
             XCounter = _currentCount;
         }
 
-        // The broker carries the Blazor -> Razor state transition server-side.
-        // The Razor Page instance that rendered this DOM is no longer live, therefore
-        // JS interop is the final live UI hop for the already-rendered Razor document.
-        await JS.InvokeVoidAsync(JsMessageHandler, _actorId, XCounter);
+        // DataChanged is the application-level Blazor -> Razor/Blazor change channel.
+        // JS is an independent, optional last-mile bridge for an already-rendered Razor DOM.
+        if (EnableJsDomBridge && !string.IsNullOrWhiteSpace(JsMessageHandler))
+            await JS.InvokeVoidAsync(JsMessageHandler, _actorId, XCounter);
     }
 
-    private async ValueTask OnCounterChangedAsync(
-        ExchangeMessage<int> message,
-        CancellationToken cancellationToken)
+    private void OnDataChanged(object? sender, RazorBlazorDataChangedEventArgs e)
     {
-        await InvokeAsync(() =>
+        if (!DataExchange.ShouldProcessChange(
+                RazorBlazorDataExchangeSessionId,
+                _actorId,
+                e,
+                CounterProperty))
         {
-            _currentCount = message.Value;
+            return;
+        }
+
+        if (e.Value is not int value)
+            return;
+
+        _ = InvokeAsync(() =>
+        {
+            _currentCount = value;
             XCounter = _currentCount;
             StateHasChanged();
         });
@@ -137,7 +152,10 @@
 
     public void Dispose()
     {
-        _subscription?.Dispose();
-        _subscription = null;
+        if (!_changeEventSubscribed)
+            return;
+
+        DataExchange.DataChanged -= OnDataChanged;
+        _changeEventSubscribed = false;
     }
 }

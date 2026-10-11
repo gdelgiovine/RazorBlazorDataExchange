@@ -28,6 +28,13 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
     private long _removedSessions;
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>
+    /// First-class change event shared by Razor/MVC and Blazor participants.
+    /// It is independent of the legacy-event compatibility switch.
+    /// </summary>
+    public event EventHandler<RazorBlazorDataChangedEventArgs>? DataChanged;
+
     public event EventHandler<DataChangeWithActorEventArgs>? DataChangeWithActor;
     public event EventHandler<DataChangesWithActorEventArgs>? DataChangesWithActor;
 
@@ -143,7 +150,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             return null;
 
         DispatchSynchronously(prepared);
-        RaiseLegacySingle(prepared);
+        RaiseChangeNotifications(prepared);
         return ToTypedMessage<T>(prepared.Message);
     }
 
@@ -173,7 +180,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             return null;
 
         await DispatchAsync(prepared, cancellationToken).ConfigureAwait(false);
-        RaiseLegacySingle(prepared);
+        RaiseChangeNotifications(prepared);
         return ToTypedMessage<T>(prepared.Message);
     }
 
@@ -196,7 +203,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             return null;
 
         DispatchSynchronously(prepared);
-        RaiseLegacySingle(prepared);
+        RaiseChangeNotifications(prepared);
         return ToTypedMessage<T>(prepared.Message);
     }
 
@@ -218,7 +225,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             return null;
 
         await DispatchAsync(prepared, cancellationToken).ConfigureAwait(false);
-        RaiseLegacySingle(prepared);
+        RaiseChangeNotifications(prepared);
         return ToTypedMessage<T>(prepared.Message);
     }
 
@@ -411,7 +418,7 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             return;
 
         DispatchSynchronously(prepared);
-        RaiseLegacySingle(prepared);
+        RaiseChangeNotifications(prepared);
     }
 
     public void NotifyDataChange(
@@ -457,6 +464,33 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
 
     public bool SameSession(string sessionId1, string sessionId2)
         => string.Equals(sessionId1, sessionId2, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Returns true when a first-class change event belongs to the requested session and
+    /// was published by another actor. The helper is UI-technology neutral and can be used
+    /// from Razor/MVC infrastructure and Blazor components alike.
+    /// </summary>
+    public bool ShouldProcessChange(
+        string sessionId,
+        string actorId,
+        RazorBlazorDataChangedEventArgs e,
+        string? propertyName = null)
+    {
+        ValidateSession(sessionId);
+        if (string.IsNullOrWhiteSpace(actorId))
+            throw new ArgumentException("ActorId cannot be empty.", nameof(actorId));
+        ArgumentNullException.ThrowIfNull(e);
+
+        if (!string.Equals(sessionId, e.SessionId, StringComparison.Ordinal))
+            return false;
+        if (string.Equals(actorId, e.ActorId, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (propertyName is not null &&
+            !string.Equals(propertyName, e.PropertyName, StringComparison.Ordinal))
+            return false;
+
+        return true;
+    }
 
     public bool ShouldProcessEvent(string sessionId, string setter, DataChangeWithActorEventArgs e)
     {
@@ -734,12 +768,14 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
             subscription.ActorId);
     }
 
-    private void RaiseLegacySingle(PreparedPublication prepared)
+    private void RaiseChangeNotifications(PreparedPublication prepared)
     {
+        var message = prepared.Message;
+
+        InvokeChangeHandlers(new RazorBlazorDataChangedEventArgs(message));
+
         if (!_options.EnableLegacyEvents)
             return;
-
-        var message = prepared.Message;
         var args = new DataChangeWithActorEventArgs(
             message.SessionId,
             message.PropertyName,
@@ -751,6 +787,31 @@ public partial class RazorBlazorDataExchange : INotifyPropertyChanged
 
         InvokeLegacyHandlers(DataChangeWithActor, args, "DataChangeWithActor");
         InvokePropertyChangedHandlers(new PropertyChangedEventArgs(message.PropertyName));
+    }
+
+    private void InvokeChangeHandlers(RazorBlazorDataChangedEventArgs args)
+    {
+        var handlers = DataChanged;
+        if (handlers is null)
+            return;
+
+        foreach (EventHandler<RazorBlazorDataChangedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, args);
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Increment(ref _deliveryFailures);
+                _logger.LogError(
+                    ex,
+                    "DataChanged exchange event handler failed. Session={SessionId}, Property={PropertyName}, Actor={ActorId}",
+                    args.SessionId,
+                    args.PropertyName,
+                    args.ActorId);
+            }
+        }
     }
 
     private void InvokeLegacyHandlers<TEventArgs>(

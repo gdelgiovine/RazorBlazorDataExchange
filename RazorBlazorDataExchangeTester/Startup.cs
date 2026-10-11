@@ -42,6 +42,10 @@ namespace RazorBlazorDataExchangeTester
                 options.MaxModificationHistory = 50;
                 options.CleanupSessionsWithActiveSubscriptions = false;
             });
+
+            // Razor/MVC can consume the same first-class DataChanged event used by Blazor.
+            // The observer is long-lived because a Razor PageModel itself exists only for one request.
+            services.AddSingleton<RazorChangeEventObserver>();
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)

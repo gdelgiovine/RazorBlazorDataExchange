@@ -10,7 +10,7 @@ internal static class Program
         var baseUrl = Environment.GetEnvironmentVariable("RBDX_BASE_URL")
             ?? "http://127.0.0.1:5087";
 
-        Console.WriteLine($"RazorBlazorDataExchange 0.5 browser E2E tests against {baseUrl}");
+        Console.WriteLine($"RazorBlazorDataExchange 0.6.1 browser E2E tests against {baseUrl}");
 
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -57,18 +57,26 @@ internal static class Program
         await WaitForAllVisibleCountersAsync(page, 2);
         await WaitForTextAsync(page, "[data-testid='last-update-source']", component1Actor);
 
-        // Blazor #2 -> Razor DOM + Blazor #1.
+        // Blazor #2 has its JS DOM bridge disabled. The same DataChanged event still reaches
+        // Blazor #1 and the persistent Razor-side server observer.
         await page.Locator("[data-component-id='CounterComponent2'] [data-testid='increment-blazor']").ClickAsync();
-        await WaitForAllVisibleCountersAsync(page, 3);
-        await WaitForTextAsync(page, "[data-testid='last-update-source']", component2Actor);
+        await WaitForBlazorCountersAsync(page, 3);
 
-        // The Blazor publication is persisted in the singleton broker and is visible to
-        // a subsequent Razor HTTP request, not only to the already-rendered DOM via JS.
+        // No JS bridge ran for component #2, so the already-rendered Razor DOM remains at 2.
+        Assert(
+            await ReadIntAsync(page, "[data-testid='razor-counter-value']") == 2,
+            "Razor DOM changed even though the component's JS bridge was disabled.");
+
+        // A later Razor request consumes the broker state and also proves that the Razor-side
+        // DataChanged observer received the Blazor-originated event without using JS.
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await WaitForInteractiveComponentsAsync(page);
         await WaitForAllVisibleCountersAsync(page, 3);
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", component2Actor);
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-property']", "XCounter");
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "3");
 
-        Console.WriteLine("PASS same-page Razor <-> Blazor bidirectional synchronization");
+        Console.WriteLine("PASS same-page Razor <-> Blazor DataChanged events + optional JS bridge");
         await page.CloseAsync();
     }
 

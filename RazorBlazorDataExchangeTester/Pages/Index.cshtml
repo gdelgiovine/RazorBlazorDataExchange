@@ -22,7 +22,13 @@
         <div class="card-body">
             <h5 class="card-title">Razor host</h5>
             <p class="lead">Counter value in Razor DOM: <span id="counter-value" data-testid="razor-counter-value">@Model.XCounter</span></p>
-            <p>Last live update source: <span id="last-update-source" data-testid="last-update-source">Razor initial render</span></p>
+            <p>Last live DOM update source: <span id="last-update-source" data-testid="last-update-source">Razor initial render</span></p>
+            <hr />
+            <p class="mb-1"><strong>Last Razor server-side DataChanged event</strong></p>
+            <p class="mb-1">Actor: <span data-testid="razor-observed-change-actor">@Model.LastObservedChangeActor</span></p>
+            <p class="mb-1">Property: <span data-testid="razor-observed-change-property">@Model.LastObservedChangeProperty</span></p>
+            <p class="mb-1">Value: <span data-testid="razor-observed-change-value">@Model.LastObservedChangeValue</span></p>
+            <p class="mb-1">Version: <span data-testid="razor-observed-change-version">@Model.LastObservedChangeVersion</span></p>
             <button id="increment-btn"
                     data-testid="increment-razor"
                     type="button"
@@ -42,7 +48,8 @@
                        param-buttonText="@("Increase from Blazor Component 1")"
                        param-counterText="@("Current value in Blazor Component 1:")"
                        param-XCounter="@Model.XCounter"
-                       param-JsMessageHandler="@("handleBlazorEvent")" />
+                       param-JsMessageHandler="@("handleBlazorEvent")"
+                       param-EnableJsDomBridge="@(true)" />
         </div>
         <div class="col-md-6">
             <component type="typeof(BlazorComponents.CounterComponent)"
@@ -52,7 +59,8 @@
                        param-buttonText="@("Increase from Blazor Component 2")"
                        param-counterText="@("Current value in Blazor Component 2:")"
                        param-XCounter="@Model.XCounter"
-                       param-JsMessageHandler="@("handleBlazorEvent")" />
+                       param-JsMessageHandler="@("handleBlazorEvent")"
+                       param-EnableJsDomBridge="@(false)" />
         </div>
     </div>
 </div>

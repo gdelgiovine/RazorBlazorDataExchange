@@ -4,7 +4,7 @@
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.6.0**.
+Current core version: **0.6.1**.
 
 ## Why the broker is Singleton
 
@@ -74,7 +74,49 @@ Blazor component -> IJSRuntime -> JavaScript in Razor host page -> DOM
 
 This JS interop path complements the broker; it does not replace the Blazor -> Razor shared-state path.
 
-## Version 0.6 features
+## First-class change events in Razor and Blazor
+
+Version 0.6.1 makes change events a first-class, UI-technology-neutral contract:
+
+```csharp
+exchange.DataChanged += OnDataChanged;
+```
+
+`DataChanged` is raised for every committed single-property `Publish` / `Update`, independently of whether the publisher is Razor/MVC, Blazor, or another server-side participant. The event carries:
+
+- `SessionId`
+- `PropertyName`
+- `Value` / `ValueType`
+- `ActorId`
+- `MessageId`
+- `CorrelationId`
+- `Version`
+- `Timestamp`
+
+Razor/MVC and Blazor can use the same filtering helper:
+
+```csharp
+if (exchange.ShouldProcessChange(sessionId, actorId, e, "Counter"))
+{
+    // process a change from another actor in this session
+}
+```
+
+A Blazor component can subscribe directly and unsubscribe during `Dispose`. A Razor `PageModel` is request-scoped and therefore cannot remain alive after its HTTP response; long-lived Razor/MVC event consumption belongs in a server-side service/observer used by subsequent PageModel requests.
+
+JavaScript is **not required for the change event path**. The sample keeps JS interop as an independent optional last-mile bridge when a Blazor-originated change should immediately mutate DOM that was already rendered by Razor:
+
+```text
+application/state change:
+Blazor -> DataChanged -> Razor/MVC server observer     (no JS)
+
+optional live DOM bridge:
+Blazor -> IJSRuntime -> existing Razor-rendered DOM    (JS)
+```
+
+The sample deliberately runs one Blazor counter with the JS DOM bridge enabled and another with it disabled. Both still exchange changes through `DataChanged`, which is validated by browser E2E tests.
+
+## Version 0.6 / 0.6.1 features
 
 Version 0.6 preserves all 0.5 broker behavior and adds optional ordering plus a transport service-provider interface.
 
@@ -340,7 +382,7 @@ The component demonstrates:
 - subscription disposal;
 - atomic updates;
 - UI updates on the Blazor dispatcher;
-- JS interop for immediate Blazor -> Razor DOM updates.
+- optional JS interop for immediate Blazor -> already-rendered Razor DOM updates.
 
 ### `RazorBlazorDataExchangeTester`
 
