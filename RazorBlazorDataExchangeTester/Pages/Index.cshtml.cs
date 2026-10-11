@@ -10,18 +10,25 @@ namespace RazorBlazorDataExchangeTester.Pages
         private const string ActorId = "Razor:/Index";
 
         private readonly IHttpContextAccessor _httpContextAccessor;
+        private readonly RazorChangeEventObserver _changeObserver;
 
         public IndexModel(
             RazorBlazorDataExchange dataExchange,
-            IHttpContextAccessor httpContextAccessor)
+            IHttpContextAccessor httpContextAccessor,
+            RazorChangeEventObserver changeObserver)
         {
             DataExchange = dataExchange;
             _httpContextAccessor = httpContextAccessor;
+            _changeObserver = changeObserver;
         }
 
         public RazorBlazorDataExchange DataExchange { get; }
         public int XCounter { get; set; }
         public string SessionId { get; set; } = string.Empty;
+        public string LastObservedChangeActor { get; private set; } = "none";
+        public string LastObservedChangeProperty { get; private set; } = "none";
+        public string LastObservedChangeValue { get; private set; } = "none";
+        public long LastObservedChangeVersion { get; private set; }
 
         public void OnGet()
         {
@@ -36,6 +43,8 @@ namespace RazorBlazorDataExchangeTester.Pages
                 XCounter = 0;
                 DataExchange.StoreValue(SessionId, CounterProperty, XCounter, ActorId);
             }
+
+            LoadObservedChange();
         }
 
         public IActionResult OnPostIncrementa()
@@ -64,6 +73,17 @@ namespace RazorBlazorDataExchangeTester.Pages
 
             XCounter = message?.Value ?? DataExchange.Get<int>(SessionId, CounterProperty);
             return new JsonResult(new { value = XCounter, version = message?.Version });
+        }
+
+        private void LoadObservedChange()
+        {
+            if (!_changeObserver.TryGetLast(SessionId, out var change) || change is null)
+                return;
+
+            LastObservedChangeActor = change.ActorId;
+            LastObservedChangeProperty = change.PropertyName;
+            LastObservedChangeValue = change.Value?.ToString() ?? "<null>";
+            LastObservedChangeVersion = change.Version;
         }
 
         private string GetSessionId()
