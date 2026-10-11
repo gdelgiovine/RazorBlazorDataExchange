@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Http;
+using System.Text.Json;
+using System.Threading.Channels;
 
 namespace RazorBlazorDataExchangeTester.Pages
 {
@@ -14,6 +16,8 @@ namespace RazorBlazorDataExchangeTester.Pages
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly RazorChangeEventObserver _changeObserver;
         private int _disposed;
+        // Each live Razor SSE request owns an independent PageModel subscription.
+        private Channel<string>? _liveChangeStream;
 
         public IndexModel(
             RazorBlazorDataExchange dataExchange,
@@ -154,24 +158,91 @@ namespace RazorBlazorDataExchangeTester.Pages
         }
 
         /// <summary>
-        /// Direct event handler on the Razor PageModel, restored from the original
-        /// implementation. Receives Blazor-originated changes during this HTTP request.
-        /// A completed Razor response cannot be updated through this handler;
-        /// the persistent observer and optional JS DOM bridge remain unchanged.
+        /// Live event handler owned by the Razor PageModel. The browser's SSE request
+        /// keeps this instance alive. No persistent observer or polling is used to
+        /// deliver live DataChanged notifications.
         /// </summary>
-        private void OnDataChanged(
-            object? sender,
-            RazorBlazorDataChangedEventArgs e)
+        private void OnDataChanged(object? sender, RazorBlazorDataChangedEventArgs e)
         {
             if (Volatile.Read(ref _disposed) != 0 ||
-                string.IsNullOrWhiteSpace(SessionId) ||
-                !DataExchange.ShouldProcessChange(SessionId, ActorId, e, CounterProperty))
-            {
+                !string.Equals(SessionId, e.SessionId, StringComparison.Ordinal))
                 return;
+
+            if (e.PropertyName != CounterProperty && e.PropertyName != JsBridgeProperty)
+                return;
+
+            // Preserve the original actor filter for PageModel-local counter state.
+            if (e.PropertyName == CounterProperty &&
+                e.Value is int counter &&
+                DataExchange.ShouldProcessChange(SessionId, ActorId, e, CounterProperty))
+            {
+                XCounter = counter;
             }
 
-            if (e.Value is int value)
-                XCounter = value;
+            // Razor-originated publications must also be visible to every open
+            // tab in the same session. Delivery does not re-publish broker state.
+            var frame = JsonSerializer.Serialize(new
+            {
+                actor = e.ActorId,
+                property = e.PropertyName,
+                value = e.Value?.ToString() ?? "<null>",
+                counter = e.PropertyName == CounterProperty && e.Value is int n ? (int?)n : null,
+                version = e.Version,
+                messageId = e.MessageId
+            });
+            Volatile.Read(ref _liveChangeStream)?.Writer.TryWrite(frame);
+        }
+
+        /// <summary>
+        /// A real, long-lived Razor Pages handler. Each browser tab holds an SSE
+        /// request so its own IndexModel.OnDataChanged remains subscribed until
+        /// the browser disconnects. The Blazor JS bridge remains separate.
+        /// </summary>
+        public async Task OnGetCounterEventsAsync(CancellationToken cancellationToken)
+        {
+            var stream = Channel.CreateBounded<string>(new BoundedChannelOptions(64)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.DropOldest
+            });
+            Volatile.Write(ref _liveChangeStream, stream);
+
+            Response.ContentType = "text/event-stream";
+            Response.Headers["Cache-Control"] = "no-cache, no-store";
+            Response.Headers["X-Accel-Buffering"] = "no";
+
+            try
+            {
+                await Response.StartAsync(cancellationToken);
+
+                // This is a broker-state snapshot, not a synthesized change event.
+                var current = DataExchange.TryGet<int>(SessionId, CounterProperty, out var stored)
+                    ? stored : 0;
+                var ready = JsonSerializer.Serialize(new { counter = current });
+                await Response.WriteAsync($"event: ready\ndata: {ready}\n\n", cancellationToken);
+                await Response.Body.FlushAsync(cancellationToken);
+
+                await foreach (var frame in stream.Reader.ReadAllAsync(cancellationToken))
+                {
+                    await Response.WriteAsync($"event: change\ndata: {frame}\n\n", cancellationToken);
+                    await Response.Body.FlushAsync(cancellationToken);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Navigation or tab close; terminate this request's subscription.
+            }
+            catch (IOException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The browser closed its event stream.
+            }
+            finally
+            {
+                Volatile.Write(ref _liveChangeStream, null);
+                stream.Writer.TryComplete();
+                Dispose();
+            }
         }
 
         public void Dispose()
@@ -180,6 +251,7 @@ namespace RazorBlazorDataExchangeTester.Pages
                 return;
 
             DataExchange.DataChanged -= OnDataChanged;
+            Volatile.Read(ref _liveChangeStream)?.Writer.TryComplete();
         }
 
         private void LoadObservedChange()
