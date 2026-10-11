@@ -24,8 +24,17 @@
             <p class="lead">Counter value in Razor DOM: <span id="counter-value" data-testid="razor-counter-value">@Model.XCounter</span></p>
             <p>Last live DOM update source: <span id="last-update-source" data-testid="last-update-source">Razor initial render</span></p>
             <p class="mb-1">Razor event stream: <span data-testid="razor-event-stream-status">connecting</span></p>
-            <p class="mb-1">DOM update transport: <span data-testid="razor-dom-transport">initial render</span></p>
+            <p class="mb-1">DOM update transport: <span id="razor-dom-transport" data-testid="razor-dom-transport">initial render</span></p>
             <p class="mb-1">Blazor JSInterop calls: <span data-testid="js-bridge-calls">0</span></p>
+            <div class="small text-muted mb-2">
+                Generic C# DOM bindings:
+                <input id="dom-counter-input" data-testid="dom-counter-input"
+                       aria-label="Counter updated by RazorDomBridge" readonly
+                       value="@Model.XCounter" size="4" />
+                <label class="ms-2"><input id="dom-counter-odd" data-testid="dom-counter-odd"
+                       type="checkbox" disabled checked="@(Model.XCounter % 2 != 0)" /> Counter is odd</label>
+                <span id="dom-event-indicator" data-testid="dom-event-indicator" hidden>— DataChanged processed</span>
+            </div>
             <div class="form-check d-inline-flex align-items-center gap-2 mb-3">
                 <input type="checkbox"
                        class="form-check-input"
@@ -39,10 +48,10 @@
             </div>
             <hr />
             <p class="mb-1"><strong>Last Razor server-side DataChanged event</strong></p>
-            <p class="mb-1">Actor: <span data-testid="razor-observed-change-actor">@Model.LastObservedChangeActor</span></p>
-            <p class="mb-1">Property: <span data-testid="razor-observed-change-property">@Model.LastObservedChangeProperty</span></p>
-            <p class="mb-1">Value: <span data-testid="razor-observed-change-value">@Model.LastObservedChangeValue</span></p>
-            <p class="mb-1">Version: <span data-testid="razor-observed-change-version">@Model.LastObservedChangeVersion</span></p>
+            <p class="mb-1">Actor: <span id="razor-observed-change-actor" data-testid="razor-observed-change-actor">@Model.LastObservedChangeActor</span></p>
+            <p class="mb-1">Property: <span id="razor-observed-change-property" data-testid="razor-observed-change-property">@Model.LastObservedChangeProperty</span></p>
+            <p class="mb-1">Value: <span id="razor-observed-change-value" data-testid="razor-observed-change-value">@Model.LastObservedChangeValue</span></p>
+            <p class="mb-1">Version: <span id="razor-observed-change-version" data-testid="razor-observed-change-version">@Model.LastObservedChangeVersion</span></p>
             <button id="increment-btn"
                     data-testid="increment-razor"
                     type="button"
@@ -80,44 +89,21 @@
 </div>
 
 @section Scripts {
+    <script src="~/js/razor-dom-bridge.js" asp-append-version="true"></script>
     <script>
         let jsBridgeCalls = 0;
 
-        // This connection keeps an IndexModel HTTP request alive. The actual
-        // IndexModel.OnDataChanged .NET handler pushes SSE events to this tab.
-        // Unlike the 0.6.3 diagnostic UI there is no polling of LastChange.
-        const razorEventStream = new EventSource('/Index?handler=CounterEvents');
-
-        razorEventStream.addEventListener('ready', event => {
-            const snapshot = JSON.parse(event.data);
-            document.querySelector('[data-testid="razor-event-stream-status"]').textContent = 'connected';
-            if (Number.isInteger(snapshot.counter)) {
-                const counterLabel = document.getElementById('counter-value');
-                if (Number(counterLabel.textContent) !== snapshot.counter) {
-                    counterLabel.textContent = snapshot.counter;
-                    document.querySelector('[data-testid="razor-dom-transport"]').textContent = 'Razor SSE snapshot';
-                }
+        // Generic library applies DOM commands requested from C# in
+        // IndexModel.OnDataChanged(). No Razor-specific DOM dispatch code here.
+        // The optional Blazor JSInterop callback below remains independent.
+        const razorEventStream = RazorDomBridge.connect('/Index?handler=CounterEvents', {
+            onReady: () => {
+                document.querySelector('[data-testid="razor-event-stream-status"]').textContent = 'connected';
+            },
+            onError: () => {
+                document.querySelector('[data-testid="razor-event-stream-status"]').textContent = 'reconnecting';
             }
         });
-
-        razorEventStream.addEventListener('change', event => {
-            const change = JSON.parse(event.data);
-            document.querySelector('[data-testid="razor-observed-change-actor"]').textContent = change.actor;
-            document.querySelector('[data-testid="razor-observed-change-property"]').textContent = change.property;
-            document.querySelector('[data-testid="razor-observed-change-value"]').textContent = change.value;
-            document.querySelector('[data-testid="razor-observed-change-version"]').textContent = change.version;
-
-            if (change.property === 'XCounter' && Number.isInteger(change.counter)) {
-                document.getElementById('counter-value').textContent = change.counter;
-                document.getElementById('last-update-source').textContent = change.actor;
-                document.querySelector('[data-testid="razor-dom-transport"]').textContent = 'Razor IndexModel.OnDataChanged → SSE';
-            }
-        });
-
-        razorEventStream.onerror = () => {
-            document.querySelector('[data-testid="razor-event-stream-status"]').textContent = 'reconnecting';
-        };
-        window.addEventListener('pagehide', () => razorEventStream.close());
 
         async function setJsDomBridgeEnabled(checkbox) {
             const requestedValue = checkbox.checked;

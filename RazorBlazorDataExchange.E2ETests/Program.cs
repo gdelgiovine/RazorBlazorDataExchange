@@ -10,7 +10,7 @@ internal static class Program
         var baseUrl = Environment.GetEnvironmentVariable("RBDX_BASE_URL")
             ?? "http://127.0.0.1:5087";
 
-        Console.WriteLine($"RazorBlazorDataExchange 0.6.5 browser E2E tests against {baseUrl}");
+        Console.WriteLine($"RazorBlazorDataExchange 0.6.6 browser E2E tests against {baseUrl}");
 
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -116,6 +116,7 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-property']", "XCounter");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "1");
         await WaitForTextAsync(page, "[data-testid='razor-dom-transport']", "Razor IndexModel.OnDataChanged → SSE");
+        await WaitForGenericDomBindingsAsync(page, 1);
         Assert(await ReadIntAsync(page, "[data-testid='js-bridge-calls']") == 0,
             "JSInterop ran even though it was disabled; Razor update must be SSE-driven.");
 
@@ -125,6 +126,7 @@ internal static class Program
             .ClickAsync();
         await WaitForAllVisibleCountersAsync(page, 2);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", actor1);
+        await WaitForGenericDomBindingsAsync(page, 2);
         Assert(await ReadIntAsync(page, "[data-testid='js-bridge-calls']") == 0,
             "Counter1 invoked JavaScript with the bridge disabled.");
 
@@ -298,6 +300,26 @@ internal static class Program
 
         throw new InvalidOperationException(
             $"The original Blazor JSInterop bridge was not invoked {expectedMinimum} times.");
+    }
+
+    private static async Task WaitForGenericDomBindingsAsync(IPage page, int counter)
+    {
+        // All six operations come from IndexModel.OnDataChanged -> RazorDomBridge.
+        // No application-specific DOM mutations are embedded in Index.cshtml JS.
+        await page.WaitForFunctionAsync(
+            @"expected => {
+                const input = document.getElementById('dom-counter-input');
+                const check = document.getElementById('dom-counter-odd');
+                const marker = document.getElementById('dom-event-indicator');
+                const counter = document.getElementById('counter-value');
+                return input && check && marker && counter &&
+                    input.value === String(expected) &&
+                    check.checked === (expected % 2 !== 0) &&
+                    marker.hidden === false &&
+                    counter.classList.contains('dom-synced') &&
+                    counter.getAttribute('title')?.startsWith('XCounter, event version ');
+            }",
+            counter);
     }
 
     private static Task WaitForEventStreamReadyAsync(IPage page)

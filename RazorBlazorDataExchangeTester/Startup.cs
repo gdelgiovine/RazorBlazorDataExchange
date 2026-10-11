@@ -19,6 +19,9 @@ namespace RazorBlazorDataExchangeTester
         {
             services.AddRazorPages();
 
+            // One DOM command stream per Razor HTTP request (no new project).
+            services.AddScoped<RazorDomBridge>();
+
             // The sample intentionally uses the classic Blazor Server hosting model because
             // the goal is embedding interactive Blazor components inside existing Razor Pages.
             services.AddServerSideBlazor()

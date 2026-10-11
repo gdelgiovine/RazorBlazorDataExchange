@@ -1,8 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Http;
-using System.Text.Json;
-using System.Threading.Channels;
 
 namespace RazorBlazorDataExchangeTester.Pages
 {
@@ -16,17 +14,19 @@ namespace RazorBlazorDataExchangeTester.Pages
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly RazorChangeEventObserver _changeObserver;
         private int _disposed;
-        // Each live Razor SSE request owns an independent PageModel subscription.
-        private Channel<string>? _liveChangeStream;
+        // One DOM command channel per live Razor HTTP request.
+        private readonly RazorDomBridge _dom;
 
         public IndexModel(
             RazorBlazorDataExchange dataExchange,
             IHttpContextAccessor httpContextAccessor,
-            RazorChangeEventObserver changeObserver)
+            RazorChangeEventObserver changeObserver,
+            RazorDomBridge domBridge)
         {
             DataExchange = dataExchange;
             _httpContextAccessor = httpContextAccessor;
             _changeObserver = changeObserver;
+            _dom = domBridge;
 
             // As in the original Razor sample, the request-scoped PageModel handles
             // DataChanged directly while this HTTP request is still active.
@@ -179,68 +179,59 @@ namespace RazorBlazorDataExchangeTester.Pages
                 XCounter = counter;
             }
 
-            // Razor-originated publications must also be visible to every open
-            // tab in the same session. Delivery does not re-publish broker state.
-            var frame = JsonSerializer.Serialize(new
+            // The PageModel decides what to change. The reusable C# bridge
+            // serializes a typed batch, and the generic JS library applies it.
+            // In particular, no Blazor JSInterop call is required here.
+            var commands = new List<RazorDomBridge.Command>
             {
-                actor = e.ActorId,
-                property = e.PropertyName,
-                value = e.Value?.ToString() ?? "<null>",
-                counter = e.PropertyName == CounterProperty && e.Value is int n ? (int?)n : null,
-                version = e.Version,
-                messageId = e.MessageId
-            });
-            Volatile.Read(ref _liveChangeStream)?.Writer.TryWrite(frame);
+                RazorDomBridge.Command.Text("razor-observed-change-actor", e.ActorId),
+                RazorDomBridge.Command.Text("razor-observed-change-property", e.PropertyName),
+                RazorDomBridge.Command.Text("razor-observed-change-value", e.Value?.ToString() ?? "<null>"),
+                RazorDomBridge.Command.Text("razor-observed-change-version", e.Version)
+            };
+
+            if (e.PropertyName == CounterProperty && e.Value is int current)
+            {
+                commands.Add(RazorDomBridge.Command.Text("counter-value", current));
+                commands.Add(RazorDomBridge.Command.Text("last-update-source", e.ActorId));
+                commands.Add(RazorDomBridge.Command.Text(
+                    "razor-dom-transport", "Razor IndexModel.OnDataChanged → SSE"));
+
+                // Generic DOM command examples; no element-specific JavaScript.
+                commands.Add(RazorDomBridge.Command.InputValue("dom-counter-input", current));
+                commands.Add(RazorDomBridge.Command.Checked("dom-counter-odd", current % 2 != 0));
+                commands.Add(RazorDomBridge.Command.Visible("dom-event-indicator", true));
+                commands.Add(RazorDomBridge.Command.CssClass("counter-value", "dom-synced", true));
+                commands.Add(RazorDomBridge.Command.Attribute(
+                    "counter-value", "title", $"XCounter, event version {e.Version}"));
+            }
+
+            _dom.Batch(commands.ToArray());
         }
 
         /// <summary>
-        /// A real, long-lived Razor Pages handler. Each browser tab holds an SSE
-        /// request so its own IndexModel.OnDataChanged remains subscribed until
-        /// the browser disconnects. The Blazor JS bridge remains separate.
+        /// This Razor handler stays alive for the SSE request. The connection
+        /// carries typed DOM commands created by this PageModel's .NET events.
         /// </summary>
         public async Task OnGetCounterEventsAsync(CancellationToken cancellationToken)
         {
-            var stream = Channel.CreateBounded<string>(new BoundedChannelOptions(64)
-            {
-                SingleReader = true,
-                SingleWriter = false,
-                FullMode = BoundedChannelFullMode.DropOldest
-            });
-            Volatile.Write(ref _liveChangeStream, stream);
-
-            Response.ContentType = "text/event-stream";
-            Response.Headers["Cache-Control"] = "no-cache, no-store";
-            Response.Headers["X-Accel-Buffering"] = "no";
-
             try
             {
-                await Response.StartAsync(cancellationToken);
-
-                // This is a broker-state snapshot, not a synthesized change event.
-                var current = DataExchange.TryGet<int>(SessionId, CounterProperty, out var stored)
-                    ? stored : 0;
-                var ready = JsonSerializer.Serialize(new { counter = current });
-                await Response.WriteAsync($"event: ready\ndata: {ready}\n\n", cancellationToken);
-                await Response.Body.FlushAsync(cancellationToken);
-
-                await foreach (var frame in stream.Reader.ReadAllAsync(cancellationToken))
+                await _dom.StreamAsync(Response, cancellationToken, onConnected: () =>
                 {
-                    await Response.WriteAsync($"event: change\ndata: {frame}\n\n", cancellationToken);
-                    await Response.Body.FlushAsync(cancellationToken);
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // Navigation or tab close; terminate this request's subscription.
-            }
-            catch (IOException) when (cancellationToken.IsCancellationRequested)
-            {
-                // The browser closed its event stream.
+                    // Reconcile on initial connection and EventSource reconnect.
+                    // Reading broker state here does NOT simulate DataChanged.
+                    var current = DataExchange.TryGet<int>(SessionId, CounterProperty, out var stored)
+                        ? stored : 0;
+
+                    _dom.Batch(
+                        RazorDomBridge.Command.Text("counter-value", current),
+                        RazorDomBridge.Command.InputValue("dom-counter-input", current),
+                        RazorDomBridge.Command.Checked("dom-counter-odd", current % 2 != 0));
+                });
             }
             finally
             {
-                Volatile.Write(ref _liveChangeStream, null);
-                stream.Writer.TryComplete();
                 Dispose();
             }
         }
@@ -251,7 +242,7 @@ namespace RazorBlazorDataExchangeTester.Pages
                 return;
 
             DataExchange.DataChanged -= OnDataChanged;
-            Volatile.Read(ref _liveChangeStream)?.Writer.TryComplete();
+            _dom.Dispose();
         }
 
         private void LoadObservedChange()
