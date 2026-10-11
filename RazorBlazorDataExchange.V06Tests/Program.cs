@@ -6,6 +6,7 @@ internal static class Program
     {
         Console.WriteLine("RazorBlazorDataExchange 0.6 tests");
 
+        TestFirstClassDataChangedEventSymmetry();
         await TestOrderedSameRouteCompletion();
         await TestIndependentPropertyLanes();
         await TestSessionWideOrdering();
@@ -18,6 +19,53 @@ internal static class Program
         TestDependencyInjectionRegistration();
 
         Console.WriteLine("ALL V0.6 TESTS PASSED");
+    }
+
+    private static void TestFirstClassDataChangedEventSymmetry()
+    {
+        const string sessionId = "change-event-session";
+        const string propertyName = "Counter";
+        const string razorActor = "Razor:/Index";
+        const string blazorActor = "Blazor:CounterComponent:test";
+
+        var broker = new RazorBlazorDataExchange();
+        var razorReceived = new List<RazorBlazorDataChangedEventArgs>();
+        var blazorReceived = new List<RazorBlazorDataChangedEventArgs>();
+
+        EventHandler<RazorBlazorDataChangedEventArgs> razorHandler = (_, e) =>
+        {
+            if (broker.ShouldProcessChange(sessionId, razorActor, e, propertyName))
+                razorReceived.Add(e);
+        };
+
+        EventHandler<RazorBlazorDataChangedEventArgs> blazorHandler = (_, e) =>
+        {
+            if (broker.ShouldProcessChange(sessionId, blazorActor, e, propertyName))
+                blazorReceived.Add(e);
+        };
+
+        broker.DataChanged += razorHandler;
+        broker.DataChanged += blazorHandler;
+
+        try
+        {
+            broker.Publish(sessionId, propertyName, 1, razorActor);
+            broker.Publish(sessionId, propertyName, 2, blazorActor);
+        }
+        finally
+        {
+            broker.DataChanged -= razorHandler;
+            broker.DataChanged -= blazorHandler;
+        }
+
+        Assert(blazorReceived.Count == 1 && blazorReceived[0].ActorId == razorActor && (int?)blazorReceived[0].Value == 1,
+            "Blazor-side DataChanged consumer did not receive the Razor-originated change.");
+        Assert(razorReceived.Count == 1 && razorReceived[0].ActorId == blazorActor && (int?)razorReceived[0].Value == 2,
+            "Razor-side DataChanged consumer did not receive the Blazor-originated change.");
+        Assert(razorReceived[0].Version == 2,
+            "First-class DataChanged event did not preserve broker version metadata.");
+
+        Console.WriteLine("PASS first-class Razor <-> Blazor DataChanged event symmetry");
     }
 
     private static async Task TestOrderedSameRouteCompletion()
