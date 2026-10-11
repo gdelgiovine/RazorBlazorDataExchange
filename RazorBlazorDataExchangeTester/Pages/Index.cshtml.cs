@@ -25,6 +25,10 @@ namespace RazorBlazorDataExchangeTester.Pages
         public RazorBlazorDataExchange DataExchange { get; }
         public int XCounter { get; set; }
         public string SessionId { get; set; } = string.Empty;
+
+        // The demo enables DOM synchronization for both Blazor counters by default.
+        // An explicit query flag disables only Counter2's JS bridge for E2E isolation tests.
+        public bool EnableCounter2JsDomBridge { get; private set; } = true;
         public string LastObservedChangeActor { get; private set; } = "none";
         public string LastObservedChangeProperty { get; private set; } = "none";
         public string LastObservedChangeValue { get; private set; } = "none";
@@ -32,6 +36,11 @@ namespace RazorBlazorDataExchangeTester.Pages
 
         public void OnGet()
         {
+            EnableCounter2JsDomBridge = !string.Equals(
+                Request.Query["disableCounter2JsBridge"].ToString(),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+
             SessionId = GetSessionId();
 
             if (DataExchange.TryGet<int>(SessionId, CounterProperty, out var current))
