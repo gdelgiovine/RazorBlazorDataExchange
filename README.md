@@ -4,7 +4,7 @@
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.6.4**.
+Current core version: **0.6.5**.
 
 ## Why the broker is Singleton
 
@@ -74,6 +74,20 @@ Blazor component -> IJSRuntime -> JavaScript in Razor host page -> DOM
 
 This JS interop path complements the broker; it does not replace the Blazor -> Razor shared-state path.
 
+## 0.6.5 — Direct, persistent Razor PageModel events and optional original JS interop
+
+This version removes the demo's 400 ms polling from the **live UI path**. A browser tab opens one long-lived `EventSource('/Index?handler=CounterEvents')` connection. That incoming Razor Pages request owns an `IndexModel` instance with **its own direct `DataExchange.DataChanged += OnDataChanged` subscription**. Each actual broker event is processed by **`IndexModel.OnDataChanged`** and pushed to that same tab over the SSE response. Each tab has its own subscribed request; it is unsubscribed and disposed when the browser disconnects. SSE uses bounded buffering and no polling.
+
+The Razor DOM counter and Actor/Property/Value/Version labels are now updated from **real `DataChanged` events** delivered directly by this Razor handler. Changes from Razor itself, Blazor Counter1 or Counter2 all use this same event channel; changes in other sessions are not delivered. A one-time snapshot on SSE connection is state synchronization, not a fabricated change event.
+
+**The original Blazor → Razor JSInterop path is deliberately retained and unchanged:** `CounterComponent.IncrementCount()` can still use `JS.InvokeVoidAsync(JsMessageHandler, actorId, XCounter)`, calling `handleBlazorEvent(source, value)` in the Razor page. It is **secondary and optional**, controlled by the existing `JsDomBridgeEnabled` checkbox. With it **off**, the Razor DOM still updates via `OnDataChanged → SSE`; with it **on**, JSInterop runs in addition to the direct event channel. The tester displays the stream status, DOM transport and number of JSInterop calls so the mechanisms cannot be confused.
+
+The `RazorChangeEventObserver` service and `GET /Index?handler=LastChange` are retained for backwards compatibility and initial diagnostics, but **not used to deliver live UI changes**. There is no periodic `LastChange` request. On initial Razor rendering, the observer may still provide the latest persisted event metadata.
+
+This does not make a normal completed Razor HTTP request live forever: the **separate SSE request** holds its own `PageModel` open, with proper disposal. Browser-side `EventSource` and a DOM listener remain necessary to modify HTML already delivered by Razor; what is removed is the direct dependency on Blazor JSInterop for that behavior.
+
+Browser E2E tests verify both counters with the checkbox disabled and enabled, actual optional JSInterop invocations, same-session cross-tab propagation and session isolation.
+
 ## 0.6.4 — Direct event handler in the Razor PageModel
 
 The original sample's request-bound Razor `IndexModel.OnDataChanged` handler is restored and updated to the first-class `DataChanged` event API. The PageModel subscribes directly and uses session/actor/property filtering to update its `XCounter` model property when Blazor publishes a change **during that Razor HTTP request**.
@@ -130,7 +144,7 @@ By default, **both** Blazor counters enable the optional JS DOM bridge, so eithe
 
 ## 0.6.3 — Razor change-event labels and live JS bridge checkbox
 
-The tester renders `Actor`, `Property`, `Value`, and `Version` directly from the **Razor server-side `RazorChangeEventObserver`**, not from JS callback parameters. A read-only Razor Page handler, `GET /Index?handler=LastChange`, exposes the last recorded event for the current ASP.NET session. Browser-side diagnostic labels refresh approximately every 400 ms; this polling is only for presenting the server observer's state, **not** for broker communication.
+The tester renders `Actor`, `Property`, `Value`, and `Version` directly from the **Razor server-side `RazorChangeEventObserver`**, not from JS callback parameters. A read-only Razor Page handler, `GET /Index?handler=LastChange`, exposes the last recorded event for the current ASP.NET session. In 0.6.3, browser-side diagnostic labels refreshed every 400 ms. **This legacy behavior is replaced by direct Razor PageModel SSE events in 0.6.5**; the endpoint remains available for explicit read-only diagnostics.
 
 The Razor page includes the checkbox **Use JavaScript bridge to update the Razor counter from Blazor**. It is checked by default. Changing it calls `POST /Index?handler=SetJsBridge` using the existing anti-forgery token; the server publishes `JsDomBridgeEnabled` through the Singleton broker, and both Blazor components consume that property using the same `DataChanged` event as other state changes.
 
@@ -143,7 +157,7 @@ This checkbox does **not** disable all JavaScript in the Razor page: Razor-hoste
 
 Browser E2E tests now verify live labels for Razor, Counter1 and Counter2, and checkbox off/on behavior with event delivery independent from the JS bridge.
 
-## Version 0.6 / 0.6.1 / 0.6.2 / 0.6.3 features
+## Version 0.6 / 0.6.1 / 0.6.2 / 0.6.3 / 0.6.4 / 0.6.5 features
 
 Version 0.6 preserves all 0.5 broker behavior and adds optional ordering plus a transport service-provider interface.
 
