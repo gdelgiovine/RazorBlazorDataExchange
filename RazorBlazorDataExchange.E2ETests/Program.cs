@@ -57,7 +57,7 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", "Razor:/Index");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-property']", "XCounter");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "1");
-        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "4");
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "2");
 
         // Blazor #1 -> Razor DOM + Blazor #2.
         await page.Locator("[data-component-id='CounterComponent1'] [data-testid='increment-blazor']").ClickAsync();
@@ -65,7 +65,7 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='last-update-source']", component1Actor);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", component1Actor);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "2");
-        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "2");
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "3");
 
         // Regression: Blazor #2 must also refresh Razor DOM immediately by default.
         // Its state/event notification still flows through DataChanged independently.
@@ -74,7 +74,7 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='last-update-source']", component2Actor);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", component2Actor);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "3");
-        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "3");
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "4");
 
         // A later Razor request confirms the same change reached the Razor-side
         // DataChanged server observer in addition to the immediate optional JS bridge.
