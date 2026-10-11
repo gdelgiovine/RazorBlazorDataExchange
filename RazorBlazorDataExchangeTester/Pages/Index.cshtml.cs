@@ -6,6 +6,7 @@ namespace RazorBlazorDataExchangeTester.Pages
     public class IndexModel : PageModel
     {
         private const string CounterProperty = "XCounter";
+        private const string JsBridgeProperty = "JsDomBridgeEnabled";
         private const string SessionKey = "RazorBlazorDataExchangeSessionId";
         private const string ActorId = "Razor:/Index";
 
@@ -29,6 +30,7 @@ namespace RazorBlazorDataExchangeTester.Pages
         // The demo enables DOM synchronization for both Blazor counters by default.
         // An explicit query flag disables only Counter2's JS bridge for E2E isolation tests.
         public bool EnableCounter2JsDomBridge { get; private set; } = true;
+        public bool JsBridgeEnabled { get; private set; } = true;
         public string LastObservedChangeActor { get; private set; } = "none";
         public string LastObservedChangeProperty { get; private set; } = "none";
         public string LastObservedChangeValue { get; private set; } = "none";
@@ -42,6 +44,15 @@ namespace RazorBlazorDataExchangeTester.Pages
                 StringComparison.OrdinalIgnoreCase);
 
             SessionId = GetSessionId();
+            if (DataExchange.TryGet<bool>(SessionId, JsBridgeProperty, out var storedJsBridgeEnabled))
+            {
+                JsBridgeEnabled = storedJsBridgeEnabled;
+            }
+            else
+            {
+                JsBridgeEnabled = true;
+                DataExchange.StoreValue(SessionId, JsBridgeProperty, true, ActorId);
+            }
 
             if (DataExchange.TryGet<int>(SessionId, CounterProperty, out var current))
             {
@@ -82,6 +93,52 @@ namespace RazorBlazorDataExchangeTester.Pages
 
             XCounter = message?.Value ?? DataExchange.Get<int>(SessionId, CounterProperty);
             return new JsonResult(new { value = XCounter, version = message?.Version });
+        }
+
+        // Reads the event actually captured by the Razor-side server observer.
+        // This GET does not publish or simulate any change.
+        public JsonResult OnGetLastChange()
+        {
+            var sessionId = GetSessionId();
+            Response.Headers["Cache-Control"] = "no-store";
+
+            if (!_changeObserver.TryGetLast(sessionId, out var change) || change is null)
+                return new JsonResult(new { hasChange = false });
+
+            return new JsonResult(new
+            {
+                hasChange = true,
+                actor = change.ActorId,
+                property = change.PropertyName,
+                value = change.Value?.ToString() ?? "<null>",
+                version = change.Version,
+                messageId = change.MessageId
+            });
+        }
+
+        // A native Razor checkbox posts its new state, which is published to the
+        // singleton broker. All Blazor components receive the same DataChanged event.
+        public async Task<IActionResult> OnPostSetJsBridgeAsync(
+            [FromBody] JsBridgeSetting? setting,
+            CancellationToken cancellationToken)
+        {
+            if (setting is null)
+                return BadRequest(new { error = "Missing JS bridge setting." });
+
+            var sessionId = GetSessionId();
+            var message = await DataExchange.PublishAsync(
+                sessionId,
+                JsBridgeProperty,
+                setting.Enabled,
+                ActorId,
+                cancellationToken: cancellationToken);
+
+            return new JsonResult(new { enabled = message?.Value ?? setting.Enabled });
+        }
+
+        public sealed class JsBridgeSetting
+        {
+            public bool Enabled { get; set; }
         }
 
         private void LoadObservedChange()
