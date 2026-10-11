@@ -1,9 +1,10 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.Http;
 
 namespace RazorBlazorDataExchangeTester.Pages
 {
-    public class IndexModel : PageModel
+    public class IndexModel : PageModel, IDisposable
     {
         private const string CounterProperty = "XCounter";
         private const string JsBridgeProperty = "JsDomBridgeEnabled";
@@ -12,6 +13,7 @@ namespace RazorBlazorDataExchangeTester.Pages
 
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly RazorChangeEventObserver _changeObserver;
+        private int _disposed;
 
         public IndexModel(
             RazorBlazorDataExchange dataExchange,
@@ -21,6 +23,16 @@ namespace RazorBlazorDataExchangeTester.Pages
             DataExchange = dataExchange;
             _httpContextAccessor = httpContextAccessor;
             _changeObserver = changeObserver;
+
+            // As in the original Razor sample, the request-scoped PageModel handles
+            // DataChanged directly while this HTTP request is still active.
+            SessionId = GetSessionId();
+
+            // The singleton broker must NEVER retain a completed Razor PageModel.
+            // Register an explicit end-of-response cleanup rather than relying on
+            // PageModel activation/disposal conventions.
+            _httpContextAccessor.HttpContext!.Response.RegisterForDispose(this);
+            DataExchange.DataChanged += OnDataChanged;
         }
 
         public RazorBlazorDataExchange DataExchange { get; }
@@ -139,6 +151,35 @@ namespace RazorBlazorDataExchangeTester.Pages
         public sealed class JsBridgeSetting
         {
             public bool Enabled { get; set; }
+        }
+
+        /// <summary>
+        /// Direct event handler on the Razor PageModel, restored from the original
+        /// implementation. Receives Blazor-originated changes during this HTTP request.
+        /// A completed Razor response cannot be updated through this handler;
+        /// the persistent observer and optional JS DOM bridge remain unchanged.
+        /// </summary>
+        private void OnDataChanged(
+            object? sender,
+            RazorBlazorDataChangedEventArgs e)
+        {
+            if (Volatile.Read(ref _disposed) != 0 ||
+                string.IsNullOrWhiteSpace(SessionId) ||
+                !DataExchange.ShouldProcessChange(SessionId, ActorId, e, CounterProperty))
+            {
+                return;
+            }
+
+            if (e.Value is int value)
+                XCounter = value;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            DataExchange.DataChanged -= OnDataChanged;
         }
 
         private void LoadObservedChange()

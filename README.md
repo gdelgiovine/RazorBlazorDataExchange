@@ -4,7 +4,7 @@
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.6.3**.
+Current core version: **0.6.4**.
 
 ## Why the broker is Singleton
 
@@ -73,6 +73,18 @@ Blazor component -> IJSRuntime -> JavaScript in Razor host page -> DOM
 ```
 
 This JS interop path complements the broker; it does not replace the Blazor -> Razor shared-state path.
+
+## 0.6.4 — Direct event handler in the Razor PageModel
+
+The original sample's request-bound Razor `IndexModel.OnDataChanged` handler is restored and updated to the first-class `DataChanged` event API. The PageModel subscribes directly and uses session/actor/property filtering to update its `XCounter` model property when Blazor publishes a change **during that Razor HTTP request**.
+
+The Razor PageModel implements `IDisposable` and is registered for end-of-response disposal. This is critical because the broker is Singleton: completed PageModels must unsubscribe or the broker would retain references to dead HTTP request objects.
+
+The existing long-lived `RazorChangeEventObserver`, Razor label refresh, JS-bridge checkbox, and both Blazor component subscriptions are unchanged. The observer continues to handle events **after** the request finishes.
+
+The restored handler updates **server-side PageModel state only**. It cannot directly update static HTML from a response that has already been delivered. With the JS checkbox unchecked, the counter inside the existing Razor DOM still does not update live; Blazor components, the server observer, and diagnostic labels continue to receive changes. This matches Razor Pages' request-scoped rendering lifecycle, including in the original implementation.
+
+An integrated regression test now checks active-request Razor event receipt, rejection of other sessions and same-actor echoes, idempotent cleanup, and continued observer activity after PageModel disposal.
 
 ## First-class change events in Razor and Blazor
 
