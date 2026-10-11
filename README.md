@@ -4,7 +4,7 @@
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.6.1**.
+Current core version: **0.6.2**.
 
 ## Why the broker is Singleton
 
@@ -114,9 +114,9 @@ optional live DOM bridge:
 Blazor -> IJSRuntime -> existing Razor-rendered DOM    (JS)
 ```
 
-The sample deliberately runs one Blazor counter with the JS DOM bridge enabled and another with it disabled. Both still exchange changes through `DataChanged`, which is validated by browser E2E tests.
+By default, **both** Blazor counters enable the optional JS DOM bridge, so either button also updates the already-rendered Razor counter immediately. The event-only mode remains independently testable by opening the tester with `/?disableCounter2JsBridge=true`: this disables only Counter2's JS bridge while keeping `DataChanged` active for Razor/MVC server observers and Blazor subscribers. Browser E2E tests cover both modes.
 
-## Version 0.6 / 0.6.1 features
+## Version 0.6 / 0.6.1 / 0.6.2 features
 
 Version 0.6 preserves all 0.5 broker behavior and adds optional ordering plus a transport service-provider interface.
 
