@@ -29,6 +29,7 @@
 
 @code {
     private const string CounterProperty = "XCounter";
+    private const string JsBridgeProperty = "JsDomBridgeEnabled";
 
     [Parameter, EditorRequired]
     public string RazorBlazorDataExchangeSessionId { get; set; } = string.Empty;
@@ -66,6 +67,7 @@
     private string? _boundSessionId;
     private string _actorId = string.Empty;
     private int _currentCount;
+    private bool _jsBridgeEnabled;
 
     protected override void OnParametersSet()
     {
@@ -101,6 +103,14 @@
 
         XCounter = _currentCount;
 
+        // EnableJsDomBridge is a per-component host permission (used by the legacy
+        // Counter2 test override); the session-wide checkbox is broker state.
+        _jsBridgeEnabled = EnableJsDomBridge &&
+            (!DataExchange.TryGet<bool>(
+                RazorBlazorDataExchangeSessionId,
+                JsBridgeProperty,
+                out var setting) || setting);
+
         if (!_changeEventSubscribed)
         {
             DataExchange.DataChanged += OnDataChanged;
@@ -124,7 +134,7 @@
 
         // DataChanged is the application-level Blazor -> Razor/Blazor change channel.
         // JS is an independent, optional last-mile bridge for an already-rendered Razor DOM.
-        if (EnableJsDomBridge && !string.IsNullOrWhiteSpace(JsMessageHandler))
+        if (Volatile.Read(ref _jsBridgeEnabled) && !string.IsNullOrWhiteSpace(JsMessageHandler))
             await JS.InvokeVoidAsync(JsMessageHandler, _actorId, XCounter);
     }
 
@@ -133,13 +143,18 @@
         if (!DataExchange.ShouldProcessChange(
                 RazorBlazorDataExchangeSessionId,
                 _actorId,
-                e,
-                CounterProperty))
+                e))
         {
             return;
         }
 
-        if (e.Value is not int value)
+        if (e.PropertyName == JsBridgeProperty && e.Value is bool enabled)
+        {
+            Volatile.Write(ref _jsBridgeEnabled, EnableJsDomBridge && enabled);
+            return;
+        }
+
+        if (e.PropertyName != CounterProperty || e.Value is not int value)
             return;
 
         _ = InvokeAsync(() =>

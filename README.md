@@ -4,7 +4,7 @@
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.6.2**.
+Current core version: **0.6.3**.
 
 ## Why the broker is Singleton
 
@@ -116,7 +116,22 @@ Blazor -> IJSRuntime -> existing Razor-rendered DOM    (JS)
 
 By default, **both** Blazor counters enable the optional JS DOM bridge, so either button also updates the already-rendered Razor counter immediately. The event-only mode remains independently testable by opening the tester with `/?disableCounter2JsBridge=true`: this disables only Counter2's JS bridge while keeping `DataChanged` active for Razor/MVC server observers and Blazor subscribers. Browser E2E tests cover both modes.
 
-## Version 0.6 / 0.6.1 / 0.6.2 features
+## 0.6.3 — Razor change-event labels and live JS bridge checkbox
+
+The tester renders `Actor`, `Property`, `Value`, and `Version` directly from the **Razor server-side `RazorChangeEventObserver`**, not from JS callback parameters. A read-only Razor Page handler, `GET /Index?handler=LastChange`, exposes the last recorded event for the current ASP.NET session. Browser-side diagnostic labels refresh approximately every 400 ms; this polling is only for presenting the server observer's state, **not** for broker communication.
+
+The Razor page includes the checkbox **Use JavaScript bridge to update the Razor counter from Blazor**. It is checked by default. Changing it calls `POST /Index?handler=SetJsBridge` using the existing anti-forgery token; the server publishes `JsDomBridgeEnabled` through the Singleton broker, and both Blazor components consume that property using the same `DataChanged` event as other state changes.
+
+- **Checked:** Razor/Blazor event communication remains active, and both Blazor buttons immediately update the already-rendered Razor counter via the optional JS bridge.
+- **Unchecked:** `DataChanged` continues to synchronize server state, Razor observers and Blazor components. Only the Blazor-to-Razor **live counter DOM bridge** is disabled. The Razor event-diagnostic labels still refresh from the server observer using their independent browser-side fetch.
+- The checkbox setting is stored per exchange session and is restored on later Razor requests; toggling it requires no reload.
+- The earlier `?disableCounter2JsBridge=true` query flag remains supported as a component-specific host override for compatibility.
+
+This checkbox does **not** disable all JavaScript in the Razor page: Razor-hosted buttons and read-only diagnostic labels still require browser code. A normal non-interactive Razor PageModel cannot re-render already-delivered HTML merely because a server-side .NET event fired.
+
+Browser E2E tests now verify live labels for Razor, Counter1 and Counter2, and checkbox off/on behavior with event delivery independent from the JS bridge.
+
+## Version 0.6 / 0.6.1 / 0.6.2 / 0.6.3 features
 
 Version 0.6 preserves all 0.5 broker behavior and adds optional ordering plus a transport service-provider interface.
 
