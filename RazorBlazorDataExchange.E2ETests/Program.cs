@@ -57,7 +57,7 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", "Razor:/Index");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-property']", "XCounter");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "1");
-        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "1");
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "4");
 
         // Blazor #1 -> Razor DOM + Blazor #2.
         await page.Locator("[data-component-id='CounterComponent1'] [data-testid='increment-blazor']").ClickAsync();
