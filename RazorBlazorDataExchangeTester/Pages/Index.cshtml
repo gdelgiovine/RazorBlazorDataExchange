@@ -23,6 +23,9 @@
             <h5 class="card-title">Razor host</h5>
             <p class="lead">Counter value in Razor DOM: <span id="counter-value" data-testid="razor-counter-value">@Model.XCounter</span></p>
             <p>Last live DOM update source: <span id="last-update-source" data-testid="last-update-source">Razor initial render</span></p>
+            <p class="mb-1">Razor event stream: <span data-testid="razor-event-stream-status">connecting</span></p>
+            <p class="mb-1">DOM update transport: <span data-testid="razor-dom-transport">initial render</span></p>
+            <p class="mb-1">Blazor JSInterop calls: <span data-testid="js-bridge-calls">0</span></p>
             <div class="form-check d-inline-flex align-items-center gap-2 mb-3">
                 <input type="checkbox"
                        class="form-check-input"
@@ -78,38 +81,43 @@
 
 @section Scripts {
     <script>
-        let lastObservedMessageId = null;
-        let observedChangeRequestInFlight = false;
+        let jsBridgeCalls = 0;
 
-        // The browser only renders what the Razor server-side DataChanged observer recorded.
-        // This endpoint never manufactures an event or publishes a new value.
-        async function refreshObservedChange() {
-            if (observedChangeRequestInFlight)
-                return;
+        // This connection keeps an IndexModel HTTP request alive. The actual
+        // IndexModel.OnDataChanged .NET handler pushes SSE events to this tab.
+        // Unlike the 0.6.3 diagnostic UI there is no polling of LastChange.
+        const razorEventStream = new EventSource('/Index?handler=CounterEvents');
 
-            observedChangeRequestInFlight = true;
-            try {
-                const response = await fetch('/Index?handler=LastChange', { cache: 'no-store' });
-                if (!response.ok)
-                    return;
-
-                const change = await response.json();
-                if (!change.hasChange || change.messageId === lastObservedMessageId)
-                    return;
-
-                lastObservedMessageId = change.messageId;
-                document.querySelector('[data-testid="razor-observed-change-actor"]').textContent = change.actor;
-                document.querySelector('[data-testid="razor-observed-change-property"]').textContent = change.property;
-                document.querySelector('[data-testid="razor-observed-change-value"]').textContent = change.value;
-                document.querySelector('[data-testid="razor-observed-change-version"]').textContent = change.version;
+        razorEventStream.addEventListener('ready', event => {
+            const snapshot = JSON.parse(event.data);
+            document.querySelector('[data-testid="razor-event-stream-status"]').textContent = 'connected';
+            if (Number.isInteger(snapshot.counter)) {
+                const counterLabel = document.getElementById('counter-value');
+                if (Number(counterLabel.textContent) !== snapshot.counter) {
+                    counterLabel.textContent = snapshot.counter;
+                    document.querySelector('[data-testid="razor-dom-transport"]').textContent = 'Razor SSE snapshot';
+                }
             }
-            catch (error) {
-                console.error('Unable to read Razor server-side DataChanged event.', error);
+        });
+
+        razorEventStream.addEventListener('change', event => {
+            const change = JSON.parse(event.data);
+            document.querySelector('[data-testid="razor-observed-change-actor"]').textContent = change.actor;
+            document.querySelector('[data-testid="razor-observed-change-property"]').textContent = change.property;
+            document.querySelector('[data-testid="razor-observed-change-value"]').textContent = change.value;
+            document.querySelector('[data-testid="razor-observed-change-version"]').textContent = change.version;
+
+            if (change.property === 'XCounter' && Number.isInteger(change.counter)) {
+                document.getElementById('counter-value').textContent = change.counter;
+                document.getElementById('last-update-source').textContent = change.actor;
+                document.querySelector('[data-testid="razor-dom-transport"]').textContent = 'Razor IndexModel.OnDataChanged → SSE';
             }
-            finally {
-                observedChangeRequestInFlight = false;
-            }
-        }
+        });
+
+        razorEventStream.onerror = () => {
+            document.querySelector('[data-testid="razor-event-stream-status"]').textContent = 'reconnecting';
+        };
+        window.addEventListener('pagehide', () => razorEventStream.close());
 
         async function setJsDomBridgeEnabled(checkbox) {
             const requestedValue = checkbox.checked;
@@ -130,7 +138,6 @@
 
                 const result = await response.json();
                 checkbox.checked = result.enabled;
-                await refreshObservedChange();
             }
             catch (error) {
                 checkbox.checked = !requestedValue;
@@ -141,15 +148,14 @@
             }
         }
 
-        // Polling concerns only the last-event diagnostic labels. All actual
-        // Razor <-> Blazor change communication remains broker event-driven.
-        void refreshObservedChange();
-        const changeRefreshInterval = setInterval(refreshObservedChange, 400);
-
+        // Original Blazor -> Razor JSInterop path remains available as a
+        // separate optional mechanism controlled by the existing checkbox.
         function handleBlazorEvent(source, value) {
+            jsBridgeCalls++;
+            document.querySelector('[data-testid="js-bridge-calls"]').textContent = jsBridgeCalls;
             document.getElementById('counter-value').innerText = value;
             document.getElementById('last-update-source').innerText = source || 'Blazor';
-            void refreshObservedChange();
+            document.querySelector('[data-testid="razor-dom-transport"]').textContent = 'Blazor JSInterop';
         }
 
         async function incrementCounter() {
@@ -170,7 +176,7 @@
             const data = await response.json();
             document.getElementById('counter-value').innerText = data.value;
             document.getElementById('last-update-source').innerText = 'Razor:/Index';
-            void refreshObservedChange();
+            document.querySelector('[data-testid="razor-dom-transport"]').textContent = 'Razor POST fetch';
         }
     </script>
 }
