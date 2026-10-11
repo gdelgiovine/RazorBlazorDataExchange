@@ -2,8 +2,6 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Http;
 
-namespace RazorBlazorDataExchange.Dom;
-
 /// <summary>
 /// Request-scoped Razor Pages DOM-command bridge. PageModel .NET event handlers
 /// enqueue typed DOM commands; a long-running Razor SSE request streams them to
