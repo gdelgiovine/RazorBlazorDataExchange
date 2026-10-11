@@ -198,7 +198,7 @@ namespace RazorBlazorDataExchangeTester.Pages
                     "razor-dom-transport", "Razor IndexModel.OnDataChanged → SSE"));
 
                 // Generic DOM command examples; no element-specific JavaScript.
-                commands.Add(RazorDomBridge.Command.Value("dom-counter-input", current));
+                commands.Add(RazorDomBridge.Command.InputValue("dom-counter-input", current));
                 commands.Add(RazorDomBridge.Command.Checked("dom-counter-odd", current % 2 != 0));
                 commands.Add(RazorDomBridge.Command.Visible("dom-event-indicator", true));
                 commands.Add(RazorDomBridge.Command.CssClass("counter-value", "dom-synced", true));
@@ -226,7 +226,7 @@ namespace RazorBlazorDataExchangeTester.Pages
 
                     _dom.Batch(
                         RazorDomBridge.Command.Text("counter-value", current),
-                        RazorDomBridge.Command.Value("dom-counter-input", current),
+                        RazorDomBridge.Command.InputValue("dom-counter-input", current),
                         RazorDomBridge.Command.Checked("dom-counter-odd", current % 2 != 0));
                 });
             }
