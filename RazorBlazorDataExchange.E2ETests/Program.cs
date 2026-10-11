@@ -10,7 +10,7 @@ internal static class Program
         var baseUrl = Environment.GetEnvironmentVariable("RBDX_BASE_URL")
             ?? "http://127.0.0.1:5087";
 
-        Console.WriteLine($"RazorBlazorDataExchange 0.6.3 browser E2E tests against {baseUrl}");
+        Console.WriteLine($"RazorBlazorDataExchange 0.6.5 browser E2E tests against {baseUrl}");
 
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -44,6 +44,7 @@ internal static class Program
         var page = await context.NewPageAsync();
         await NavigateWithRetryAsync(page, baseUrl);
         await WaitForInteractiveComponentsAsync(page);
+        await WaitForEventStreamReadyAsync(page);
         await WaitForAllVisibleCountersAsync(page, 0);
 
         var component1Actor = await ReadActorIdAsync(page, "CounterComponent1");
@@ -75,9 +76,10 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", component2Actor);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "3");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "4");
+        Assert(await ReadIntAsync(page, "[data-testid='js-bridge-calls']") >= 2,
+            "Blazor JSInterop compatibility channel did not execute with the checkbox checked.");
 
-        // A later Razor request confirms the same change reached the Razor-side
-        // DataChanged server observer in addition to the immediate optional JS bridge.
+        // A later Razor request still gets the correct broker state and diagnostics.
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await WaitForInteractiveComponentsAsync(page);
         await WaitForAllVisibleCountersAsync(page, 3);
@@ -91,12 +93,13 @@ internal static class Program
 
     private static async Task TestJsCheckboxToggleAsync(IBrowserContext context, string baseUrl)
     {
-        // The live Razor checkbox changes a session-wide broker property.
-        // Both Blazor counters must honor it, while DataChanged continues to reach
-        // the Razor-side server observer when the JS bridge is disabled.
+        // The Razor PageModel itself receives live DataChanged events through a
+        // connected SSE request. Disabling the OPTIONAL Blazor JSInterop path must
+        // not disable Razor DOM updates.
         var page = await context.NewPageAsync();
         await NavigateWithRetryAsync(page, baseUrl);
         await WaitForInteractiveComponentsAsync(page);
+        await WaitForEventStreamReadyAsync(page);
         await WaitForAllVisibleCountersAsync(page, 0);
 
         var checkbox = page.Locator("[data-testid='js-dom-bridge-checkbox']");
@@ -109,38 +112,45 @@ internal static class Program
         await page.Locator("[data-component-id='CounterComponent2'] [data-testid='increment-blazor']")
             .ClickAsync();
 
-        await WaitForBlazorCountersAsync(page, 1);
+        await WaitForAllVisibleCountersAsync(page, 1);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", actor2);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-property']", "XCounter");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "1");
-        Assert(
-            await ReadIntAsync(page, "[data-testid='razor-counter-value']") == 0,
-            "The Razor counter was updated despite disabling the JS bridge checkbox.");
+        await WaitForTextAsync(page, "[data-testid='razor-dom-transport']", "Razor IndexModel.OnDataChanged → SSE");
+        Assert(await ReadIntAsync(page, "[data-testid='js-bridge-calls']") == 0,
+            "JSInterop ran even though it was disabled; Razor update must be SSE-driven.");
 
-        // The checkbox setting and the actual Razor-observed change must survive
-        // a subsequent Razor request, independently of the stale browser DOM.
+        // With the checkbox off, Counter1 must also update the Razor DOM via SSE.
+        var actor1 = await ReadActorIdAsync(page, "CounterComponent1");
+        await page.Locator("[data-component-id='CounterComponent1'] [data-testid='increment-blazor']")
+            .ClickAsync();
+        await WaitForAllVisibleCountersAsync(page, 2);
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", actor1);
+        Assert(await ReadIntAsync(page, "[data-testid='js-bridge-calls']") == 0,
+            "Counter1 invoked JavaScript with the bridge disabled.");
+
+        // The checkbox persists, and the direct Razor event stream reconnects on reload.
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await WaitForInteractiveComponentsAsync(page);
-        await WaitForAllVisibleCountersAsync(page, 1);
+        await WaitForEventStreamReadyAsync(page);
+        await WaitForAllVisibleCountersAsync(page, 2);
         checkbox = page.Locator("[data-testid='js-dom-bridge-checkbox']");
-        Assert(!await checkbox.IsCheckedAsync(), "The JS checkbox setting did not persist across Razor requests.");
-        await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", actor2);
+        Assert(!await checkbox.IsCheckedAsync(), "JS setting did not persist across Razor requests.");
 
-        // Re-enable the bridge at runtime. The same Counter2 button must then
-        // immediately update Razor DOM without reloading the page.
+        // Re-enable the original JSInterop path and verify that it is really invoked.
         await checkbox.CheckAsync();
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-property']", "JsDomBridgeEnabled");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "True");
 
-        var newActor2 = await ReadActorIdAsync(page, "CounterComponent2");
+        var actorAfterReload = await ReadActorIdAsync(page, "CounterComponent2");
         await page.Locator("[data-component-id='CounterComponent2'] [data-testid='increment-blazor']")
             .ClickAsync();
-        await WaitForAllVisibleCountersAsync(page, 2);
-        await WaitForTextAsync(page, "[data-testid='last-update-source']", newActor2);
-        await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", newActor2);
-        await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "2");
+        await WaitForAllVisibleCountersAsync(page, 3);
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", actorAfterReload);
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "3");
+        await WaitForIntAsync(page, "[data-testid='js-bridge-calls']", 1);
 
-        Console.WriteLine("PASS live JS checkbox toggle and independent Razor server-side change labels");
+        Console.WriteLine("PASS direct Razor PageModel DataChanged SSE with JS off and original JSInterop with JS on");
         await page.CloseAsync();
     }
 
@@ -153,6 +163,8 @@ internal static class Program
         await NavigateWithRetryAsync(pageB, baseUrl);
         await WaitForInteractiveComponentsAsync(pageA);
         await WaitForInteractiveComponentsAsync(pageB);
+        await WaitForEventStreamReadyAsync(pageA);
+        await WaitForEventStreamReadyAsync(pageB);
 
         var initial = await ReadIntAsync(pageA, "[data-testid='razor-counter-value']");
         await WaitForBlazorCountersAsync(pageA, initial);
@@ -173,18 +185,13 @@ internal static class Program
         await pageB.Locator("[data-testid='increment-razor']").ClickAsync();
         var afterRazor = initial + 1;
         await WaitForAllVisibleCountersAsync(pageB, afterRazor);
-        await WaitForBlazorCountersAsync(pageA, afterRazor);
-
-        // pageA Razor DOM is intentionally not a live broker subscriber after its HTTP response.
-        Assert(
-            await ReadIntAsync(pageA, "[data-testid='razor-counter-value']") == initial,
-            "A stale Razor DOM was unexpectedly treated as a live server-side subscriber.");
+        await WaitForAllVisibleCountersAsync(pageA, afterRazor);
 
         // Blazor in circuit A publishes to peer Blazor components in both circuits.
         await pageA.Locator("[data-component-id='CounterComponent1'] [data-testid='increment-blazor']").ClickAsync();
         var afterBlazor = afterRazor + 1;
         await WaitForAllVisibleCountersAsync(pageA, afterBlazor);
-        await WaitForBlazorCountersAsync(pageB, afterBlazor);
+        await WaitForAllVisibleCountersAsync(pageB, afterBlazor);
 
         // pageB gets the server-side value on its next Razor request.
         await pageB.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
@@ -208,6 +215,8 @@ internal static class Program
         await NavigateWithRetryAsync(isolatedPage, baseUrl);
         await WaitForInteractiveComponentsAsync(sharedPage);
         await WaitForInteractiveComponentsAsync(isolatedPage);
+        await WaitForEventStreamReadyAsync(sharedPage);
+        await WaitForEventStreamReadyAsync(isolatedPage);
 
         var sharedSession = await ReadTextAsync(sharedPage, "[data-testid='razor-session-id']");
         var isolatedSession = await ReadTextAsync(isolatedPage, "[data-testid='razor-session-id']");
@@ -277,6 +286,9 @@ internal static class Program
             "[data-component-id='CounterComponent2'] [data-testid='actor-id']",
             "Blazor:CounterComponent:CounterComponent2:");
     }
+
+    private static Task WaitForEventStreamReadyAsync(IPage page)
+        => WaitForTextAsync(page, "[data-testid='razor-event-stream-status']", "connected");
 
     private static Task WaitForAllVisibleCountersAsync(IPage page, int expected)
         => Task.WhenAll(
