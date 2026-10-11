@@ -28,7 +28,7 @@ public sealed class RazorDomBridge : IDisposable
         Batch(Command.Text(id, value));
 
     public void SetValue(string id, object? value) =>
-        Batch(Command.Value(id, value));
+        Batch(Command.InputValue(id, value));
 
     public void SetChecked(string id, bool value) =>
         Batch(Command.Checked(id, value));
@@ -129,7 +129,7 @@ public sealed class RazorDomBridge : IDisposable
         public static Command Text(string id, object? value) =>
             new("setText", id, value);
 
-        public static Command Value(string id, object? value) =>
+        public static Command InputValue(string id, object? value) =>
             new("setValue", id, value);
 
         public static Command Checked(string id, bool value) =>
