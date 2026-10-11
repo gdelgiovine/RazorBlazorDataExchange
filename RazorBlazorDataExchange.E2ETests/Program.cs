@@ -10,7 +10,7 @@ internal static class Program
         var baseUrl = Environment.GetEnvironmentVariable("RBDX_BASE_URL")
             ?? "http://127.0.0.1:5087";
 
-        Console.WriteLine($"RazorBlazorDataExchange 0.6.1 browser E2E tests against {baseUrl}");
+        Console.WriteLine($"RazorBlazorDataExchange 0.6.2 browser E2E tests against {baseUrl}");
 
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -20,15 +20,18 @@ internal static class Program
 
         var sharedSessionContext = await browser.NewContextAsync();
         var isolatedSessionContext = await browser.NewContextAsync();
+        var eventOnlyContext = await browser.NewContextAsync();
 
         try
         {
             await TestBidirectionalSamePageAsync(sharedSessionContext, baseUrl);
+            await TestEventOnlyCounter2Async(eventOnlyContext, baseUrl);
             await TestCrossCircuitSameSessionAsync(sharedSessionContext, baseUrl);
             await TestSessionIsolationAsync(sharedSessionContext, isolatedSessionContext, baseUrl);
         }
         finally
         {
+            await eventOnlyContext.CloseAsync();
             await isolatedSessionContext.CloseAsync();
             await sharedSessionContext.CloseAsync();
         }
@@ -57,18 +60,14 @@ internal static class Program
         await WaitForAllVisibleCountersAsync(page, 2);
         await WaitForTextAsync(page, "[data-testid='last-update-source']", component1Actor);
 
-        // Blazor #2 has its JS DOM bridge disabled. The same DataChanged event still reaches
-        // Blazor #1 and the persistent Razor-side server observer.
+        // Regression: Blazor #2 must also refresh Razor DOM immediately by default.
+        // Its state/event notification still flows through DataChanged independently.
         await page.Locator("[data-component-id='CounterComponent2'] [data-testid='increment-blazor']").ClickAsync();
-        await WaitForBlazorCountersAsync(page, 3);
+        await WaitForAllVisibleCountersAsync(page, 3);
+        await WaitForTextAsync(page, "[data-testid='last-update-source']", component2Actor);
 
-        // No JS bridge ran for component #2, so the already-rendered Razor DOM remains at 2.
-        Assert(
-            await ReadIntAsync(page, "[data-testid='razor-counter-value']") == 2,
-            "Razor DOM changed even though the component's JS bridge was disabled.");
-
-        // A later Razor request consumes the broker state and also proves that the Razor-side
-        // DataChanged observer received the Blazor-originated event without using JS.
+        // A later Razor request confirms the same change reached the Razor-side
+        // DataChanged server observer in addition to the immediate optional JS bridge.
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await WaitForInteractiveComponentsAsync(page);
         await WaitForAllVisibleCountersAsync(page, 3);
@@ -77,6 +76,37 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "3");
 
         Console.WriteLine("PASS same-page Razor <-> Blazor DataChanged events + optional JS bridge");
+        await page.CloseAsync();
+    }
+
+    private static async Task TestEventOnlyCounter2Async(IBrowserContext context, string baseUrl)
+    {
+        // Explicit opt-out is a separate test scenario. The default demo must update Razor DOM
+        // for both counters, but DataChanged must continue working with JavaScript disabled.
+        var page = await context.NewPageAsync();
+        await NavigateWithRetryAsync(
+            page,
+            baseUrl.TrimEnd('/') + "/?disableCounter2JsBridge=true");
+
+        await WaitForInteractiveComponentsAsync(page);
+        await WaitForAllVisibleCountersAsync(page, 0);
+
+        var actor2 = await ReadActorIdAsync(page, "CounterComponent2");
+        await page.Locator("[data-component-id='CounterComponent2'] [data-testid='increment-blazor']")
+            .ClickAsync();
+
+        await WaitForBlazorCountersAsync(page, 1);
+        Assert(
+            await ReadIntAsync(page, "[data-testid='razor-counter-value']") == 0,
+            "The Razor DOM changed even though Counter2's JS bridge was explicitly disabled.");
+
+        await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await WaitForInteractiveComponentsAsync(page);
+        await WaitForAllVisibleCountersAsync(page, 1);
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", actor2);
+        await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "1");
+
+        Console.WriteLine("PASS explicit JS opt-out preserves Blazor -> Razor DataChanged events");
         await page.CloseAsync();
     }
 
