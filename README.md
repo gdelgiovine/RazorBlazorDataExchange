@@ -4,7 +4,7 @@
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.6.5**.
+Current core version: **0.6.6**.
 
 ## Why the broker is Singleton
 
@@ -73,6 +73,32 @@ Blazor component -> IJSRuntime -> JavaScript in Razor host page -> DOM
 ```
 
 This JS interop path complements the broker; it does not replace the Blazor -> Razor shared-state path.
+
+## 0.6.6 — Integrated, generic RazorDomBridge (no new project)
+
+`RazorDomBridge.cs` is a **separate class inside the existing `RazorBlazorDataExchange` core project**. There is no separate .NET project, package or dependency on Blazor. The existing Razor tester adds the companion generic browser file `wwwroot/js/razor-dom-bridge.js`; it only parses allowlisted DOM commands delivered over the existing SSE transport. `RazorDomBridge` is registered as a scoped dependency in `Startup.cs`.
+
+In the Razor PageModel, the **existing real `DataChanged` event handler** chooses which elements and values should be changed, using C# commands:
+
+```csharp
+// From IndexModel.OnDataChanged; no application-specific JS needed.
+_dom.SetText("counter-value", current);
+
+// Or issue a consistent multi-element update:
+_dom.Batch(
+    RazorDomBridge.Command.Text("counter-value", current),
+    RazorDomBridge.Command.InputValue("dom-counter-input", current),
+    RazorDomBridge.Command.Checked("dom-counter-odd", current % 2 != 0),
+    RazorDomBridge.Command.Visible("dom-event-indicator", true),
+    RazorDomBridge.Command.CssClass("counter-value", "dom-synced", true),
+    RazorDomBridge.Command.Attribute("counter-value", "title", $"version {e.Version}"));
+```
+
+The reusable API offers `SetText`, `SetValue`, `SetChecked`, `SetVisible`, `SetClass`, `SetAttribute` and atomic grouped `Batch` delivery. DOM changes are encoded as typed JSON SSE frames with an incrementing sequence. The browser dispatcher never uses `eval` or `innerHTML`; attribute changes are restricted to text-only fields (including `data-*` and `aria-*`). Each browser tab keeps its own request-scoped `IndexModel.OnDataChanged` subscription and stream. A reconnect reads a fresh snapshot from the broker to resynchronize without forging any events. No polling and no `RazorChangeEventObserver` dependency in the live UI delivery path.
+
+**The original optional Blazor → Razor JSInterop mechanism is unchanged:** `CounterComponent.razor` still invokes `JS.InvokeVoidAsync(JsMessageHandler, actorId, XCounter)`, and `Index.cshtml` still handles `handleBlazorEvent(source,value)`. The existing checkbox controls only this secondary path, not the direct C# event → SSE DOM-command channel.
+
+Browser tests exercise generic `setText`, `setValue`, `setChecked`, `setVisible`, `setClass` and `setAttribute` commands with JSInterop off, plus re-enabling the original callback and same-session/cross-session propagation.
 
 ## 0.6.5 — Direct, persistent Razor PageModel events and optional original JS interop
 
