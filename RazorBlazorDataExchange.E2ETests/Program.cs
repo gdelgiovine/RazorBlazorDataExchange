@@ -76,8 +76,7 @@ internal static class Program
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-actor']", component2Actor);
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-value']", "3");
         await WaitForTextAsync(page, "[data-testid='razor-observed-change-version']", "4");
-        Assert(await ReadIntAsync(page, "[data-testid='js-bridge-calls']") >= 2,
-            "Blazor JSInterop compatibility channel did not execute with the checkbox checked.");
+        await WaitForJsBridgeCallsAtLeastAsync(page, 2);
 
         // A later Razor request still gets the correct broker state and diagnostics.
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
@@ -285,6 +284,20 @@ internal static class Program
             page,
             "[data-component-id='CounterComponent2'] [data-testid='actor-id']",
             "Blazor:CounterComponent:CounterComponent2:");
+    }
+
+    private static async Task WaitForJsBridgeCallsAtLeastAsync(IPage page, int expectedMinimum)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.ElapsedMilliseconds < TimeoutMs)
+        {
+            if (await ReadIntAsync(page, "[data-testid='js-bridge-calls']") >= expectedMinimum)
+                return;
+            await Task.Delay(100);
+        }
+
+        throw new InvalidOperationException(
+            $"The original Blazor JSInterop bridge was not invoked {expectedMinimum} times.");
     }
 
     private static Task WaitForEventStreamReadyAsync(IPage page)
