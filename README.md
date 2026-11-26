@@ -1,10 +1,16 @@
 # RazorBlazorDataExchange
 
-`RazorBlazorDataExchange` is a .NET 8 library and sample solution that provides a **bidirectional in-process communication channel between ASP.NET Core Razor Pages/MVC requests and Blazor Server components**.
+`RazorBlazorDataExchange` is a multi-targeted .NET 8, 9, 10 and 11 library and sample solution that provides a **bidirectional in-process communication channel between ASP.NET Core Razor Pages/MVC requests and Blazor Server components**.
 
 The main use case is **incremental Blazor adoption inside existing Razor Pages applications**: a traditional Razor page can host one or more Blazor Server components while Razor and Blazor continue to exchange shared state and change notifications in both directions.
 
-Current core version: **0.6.6**.
+Current core version: **0.7.0**.
+
+## 0.7.0 — .NET 8 / 9 / 10 / 11 compatibility
+
+All seven projects target `net8.0;net9.0;net10.0;net11.0`. The classic Razor Pages/MVC + Blazor Server hosting model, singleton broker, session isolation, direct PageModel events, generic SSE DOM bridge and optional original JSInterop remain unchanged. The CI matrix builds and runs all three existing test suites on each target framework using the corresponding SDK/runtime. .NET 8 and 9 remain compatibility targets even though Microsoft ended servicing on November 10, 2026; use .NET 10 or 11 for supported new deployments.
+
+A complete multi-target solution build requires the .NET 11 SDK. With an older matching SDK, build only its target using `-p:TargetFrameworks=net8.0` (substitute the desired TFM for .NET 9 or 10). The SSE implementation intentionally remains common to all four targets; typed SSE refactoring is a separate change. EFHelper references matching EF Core major versions and is not part of the broker runtime.
 
 ## Why the broker is Singleton
 
@@ -519,7 +525,7 @@ Ordered-exchange lanes are created on demand and retired after the final active/
 
 Prerequisites:
 
-- .NET 8 SDK
+- .NET 11 SDK for a full multi-target build; matching .NET runtime for the selected executable target
 - Visual Studio 2022 or later, or the .NET CLI
 
 Build the complete solution:
@@ -532,32 +538,32 @@ dotnet build RazorBlazorDataExchange.sln -c Release
 Run the sample application:
 
 ```bash
-dotnet run --project RazorBlazorDataExchangeTester
+dotnet run --project RazorBlazorDataExchangeTester --framework net10.0
 ```
 
 Run the broker stress tests:
 
 ```bash
-dotnet run --project RazorBlazorDataExchange.StressTests -c Release
+dotnet run --project RazorBlazorDataExchange.StressTests -c Release --framework net10.0
 ```
 
 Run the 0.6 ordering/transport tests:
 
 ```bash
-dotnet run --project RazorBlazorDataExchange.V06Tests -c Release
+dotnet run --project RazorBlazorDataExchange.V06Tests -c Release --framework net10.0
 ```
 
 For the browser end-to-end suite, build first and install Playwright Chromium:
 
 ```bash
-pwsh RazorBlazorDataExchange.E2ETests/bin/Release/net8.0/playwright.ps1 install chromium
+pwsh RazorBlazorDataExchange.E2ETests/bin/Release/net10.0/playwright.ps1 install chromium
 ```
 
 Start the tester on a known URL and run:
 
 ```bash
 RBDX_BASE_URL=http://127.0.0.1:5087 \
-  dotnet run --project RazorBlazorDataExchange.E2ETests -c Release --no-build
+  dotnet run --project RazorBlazorDataExchange.E2ETests -c Release --framework net10.0 --no-build
 ```
 
 The GitHub Actions workflow performs solution build, broker stress tests, 0.6 ordering/transport tests, Chromium installation, tester startup and browser E2E validation automatically.
